@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "providers/OpenAIProvider.h"
+#include "providers/ProviderFactory.h"
 #include "session/ChatHistory.h"
 
 // TIP 要<b>Run</b>代码，请按 <shortcut actionId="Run"/> 或点击装订区域中的 <icon src="AllIcons.Actions.Execute"/> 图标。
@@ -21,7 +22,7 @@ int main(int argc, char* argv[]) {
   try {
     auto cfg = quantclaw::Config::Load();
 
-    quantclaw::providers::OpenAIProvider provider(cfg.api_key, cfg.model, cfg.base_url);
+    auto provider = quantclaw::providers::CreateProvider(cfg);
 
     quantclaw::session::ChatHistory history;
     auto messages = history.Load();
@@ -32,7 +33,7 @@ int main(int argc, char* argv[]) {
     if (messages.empty()) messages.push_back({"system", "You are a helpful assistant."});
 
     messages.push_back({"user", user_message});
-    std::string reply = provider.Chat(messages);
+    std::string reply = provider->Chat(messages);
     std::cout << reply << std::endl;
 
     messages.push_back({"assistant", reply});

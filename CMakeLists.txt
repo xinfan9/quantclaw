@@ -28,6 +28,12 @@ add_executable(quantclaw src/main.cpp
         src/session/ChatHistory.cc
         src/session/ChatHistory.h
         src/platform.h
+        src/providers/AnthropicProvider.cc
+        src/providers/AnthropicProvider.h
+        src/providers/HttpClient.cc
+        src/providers/HttpClient.h
+        src/providers/ProviderFactory.cc
+        src/providers/ProviderFactory.h
 )
 
 
