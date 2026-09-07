@@ -18,8 +18,8 @@ std::string ChatHistory::DefaultPath() {
 
 ChatHistory::ChatHistory(std::string path) : _path(std::move(path)) {}
 
-std::vector<providers::Messages> ChatHistory::Load() const {
-  std::vector<providers::Messages> messages;
+std::vector<providers::Message> ChatHistory::Load() const {
+  std::vector<providers::Message> messages;
   if (!std::filesystem::exists(_path)) return messages;
 
   std::ifstream file(_path);
@@ -41,14 +41,14 @@ std::vector<providers::Messages> ChatHistory::Load() const {
   for (const auto& item : json) {
     if (item.contains("role") && item["role"].is_string()
      && item.contains("content") && item["content"].is_string())
-      messages.push_back({item["role"].get<std::string>(), item["content"].get<std::string>()});
+      messages.push_back({item["role"].get<std::string>(), item["content"].get<std::string>(), "", {}});
   }
 
 
   return messages;
 }
 
-void ChatHistory::Save(const std::vector<providers::Messages>& messages) const {
+void ChatHistory::Save(const std::vector<providers::Message>& messages) const {
   std::filesystem::create_directories(std::filesystem::path(_path).parent_path());
 
   nlohmann::json json = nlohmann::json::array();
@@ -66,12 +66,5 @@ void ChatHistory::Clear() const {
   std::error_code ec;
   std::filesystem::remove(_path, ec);
 }
-
-
-
-
-
-
-
 } // session
 }                                         // quantclaw

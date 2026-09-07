@@ -10,7 +10,7 @@
 
 namespace quantclaw::providers {
 
-std::string AnthropicProvider::Chat(std::vector<Messages>& messages) {
+std::string AnthropicProvider::Chat(std::vector<Message>& messages) {
   nlohmann::json body;
   body["model"] = _model;
   body["max_tokens"] = 4096;

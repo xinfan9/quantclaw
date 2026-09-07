@@ -12,7 +12,8 @@ class 默认 private 继承，所以写继承时不要省略 public
 class OpenAIProvider : public LLMProvider {
 public:
   OpenAIProvider(std::string api_key, std::string model, std::string base_url);
-  std::string Chat(std::vector<Messages>&) override;
+  std::string Chat(std::vector<Message>&) override;
+  ChatResponse Chat(const std::vector<Message>& messages, const tools::ToolRegistry& tools) override;
 
 private:
   std::string _api_key;

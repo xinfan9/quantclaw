@@ -1,13 +1,37 @@
 #pragma once
 #include<string>
 #include<vector>
+#include <nlohmann/json.hpp>
+
+namespace quantclaw::tools {
+class ToolRegistry;
+}
 
 namespace quantclaw::providers {
 
-struct Messages {
+struct Message {
   std::string role;
   std::string content;
+
+  std::string tool_call_id;
+  std::vector<struct ToolCall> tool_calls;
 };
+
+struct ToolCall {
+  std::string id;
+  std::string name;
+  nlohmann::json arguments;
+};
+
+struct ChatResponse {
+  std::string content;
+  std::vector<ToolCall> tool_calls;
+
+  [[nodiscard]] bool isToolCall() const {
+    return !tool_calls.empty();
+  }
+};
+
 
 class LLMProvider {
 public:
@@ -30,6 +54,7 @@ public:
   抽象类不能实例化：
   ***/
   virtual ~LLMProvider() = default;
-  virtual std::string Chat(std::vector<Messages>&) = 0;
+  virtual std::string Chat(std::vector<Message>&) = 0;
+  virtual ChatResponse Chat(const std::vector<Message>& messages, const tools::ToolRegistry& tools) = 0;
 };
 } // providers

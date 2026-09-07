@@ -20,6 +20,8 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
+#        src/providers/AnthropicProvider.cc
+#        src/providers/AnthropicProvider.h
 add_executable(quantclaw src/main.cpp
         src/config.h
         src/providers/LLMProvider.h
@@ -28,12 +30,15 @@ add_executable(quantclaw src/main.cpp
         src/session/ChatHistory.cc
         src/session/ChatHistory.h
         src/platform.h
-        src/providers/AnthropicProvider.cc
-        src/providers/AnthropicProvider.h
         src/providers/HttpClient.cc
         src/providers/HttpClient.h
         src/providers/ProviderFactory.cc
         src/providers/ProviderFactory.h
+        src/tools/Tool.h
+        src/tools/ToolRegistry.cc
+        src/tools/ToolRegistry.h
+        src/tools/CalculatorTool.cc
+        src/tools/CalculatorTool.h
 )
 
 
