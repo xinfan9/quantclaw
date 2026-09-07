@@ -47,6 +47,14 @@ add_executable(quantclaw src/main.cpp
         src/tools/CalculatorTool.h
         src/core/MemoryEngine.cc
         src/core/MemoryEngine.h
+        src/security/PermissionManager.cc
+        src/security/PermissionManager.h
+        src/mcp/StdioTransport.cc
+        src/mcp/StdioTransport.h
+        src/mcp/MCPClient.cc
+        src/mcp/MCPClient.h
+        src/mcp/MCPTool.cc
+        src/mcp/MCPTool.h
 )
 
 

@@ -6,8 +6,11 @@
 
 #include "config.h"
 #include "core/MemoryEngine.h"
+#include "mcp/MCPClient.h"
+#include "mcp/MCPTool.h"
 #include "providers/LLMProvider.h"
 #include "providers/ProviderFactory.h"
+#include "security/PermissionManager.h"
 #include "session/ChatHistory.h"
 #include "tools/CalculatorTool.h"
 #include "tools/ToolRegistry.h"
@@ -74,6 +77,45 @@ int main(int argc, char* argv[]) {
     tools.Register(std::make_unique<quantclaw::tools::CalculatorTool>());
     spdlog::info("[tools] registered: calculator");
 
+    std::shared_ptr<quantclaw::mcp::MCPClient> mcp_client;
+    const char* mcp_server = std::getenv("QUANTCLAW_MCP_SERVER");
+    if (mcp_server) {
+      try {
+        std::string server_cmd(mcp_server);
+        std::vector<std::string> parts;
+        std::string current;
+        for (char c : server_cmd) {
+          if (c == ' ') {
+            if (!current.empty()) {
+              parts.push_back(current);
+              current.clear();
+            }
+          } else current += c;
+        }
+
+        if (!current.empty()) parts.push_back(current);
+
+        if (!parts.empty()) {
+          std::string cmd = parts[0];
+          std::vector args(parts.begin() + 1, parts.end());
+
+          mcp_client = std::make_shared<quantclaw::mcp::MCPClient>(cmd, args);
+
+          for (auto& def : mcp_client->ListTools()) {
+            tools.Register(std::make_unique<quantclaw::mcp::MCPTool>(mcp_client, def));
+          }
+
+          spdlog::info("MCP tools registered from: {}", cmd);
+        }
+      } catch (const std::exception& e) {
+        spdlog::error("Failed to initialize MCP server: {}", e.what());
+      }
+
+
+    }
+
+    quantclaw::security::PermissionManager permisson(quantclaw::security::PermissionManager::Mode::kAlwaysAsk);
+
     quantclaw::session::ChatHistory history;
     auto messages = history.Load();
     spdlog::info("[history] loaded {} messages", messages.size());
@@ -122,6 +164,11 @@ int main(int argc, char* argv[]) {
       messages.push_back(assistant_msg);
 
       for (const auto& tool_call : response.tool_calls) {
+        if (!permisson.RequestPermission(tool_call.name, tool_call.arguments.dump())) {
+          spdlog::info("[tool permission] denied {}", tool_call.name);
+          messages.push_back({"tool", "Permission denied", tool_call.id, {}});
+          continue;
+        }
         spdlog::info("[tool execute] name={} args={}",
                      tool_call.name, tool_call.arguments.dump());
         std::string result = tools.Execute(tool_call.name, tool_call.arguments);
