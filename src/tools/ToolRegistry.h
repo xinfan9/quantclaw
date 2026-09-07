@@ -1,6 +1,7 @@
 #pragma once
 #include "Tool.h"
 #include <memory>
+#include <unordered_map>
 namespace quantclaw::tools {
 class ToolRegistry {
 public:

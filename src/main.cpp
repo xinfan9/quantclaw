@@ -5,6 +5,7 @@
 #include <spdlog/spdlog.h>
 
 #include "config.h"
+#include "core/MemoryEngine.h"
 #include "providers/LLMProvider.h"
 #include "providers/ProviderFactory.h"
 #include "session/ChatHistory.h"
@@ -83,13 +84,19 @@ int main(int argc, char* argv[]) {
       messages = std::vector(messages.end() - kMaxHistory, messages.end());
       spdlog::info("[history] truncated to last {} messages", kMaxHistory);
     }
+
+    quantclaw::core::MemoryEngine memory(messages);
+    auto relevant = memory.Search(user_message, 3);
+    std::string memory_context = quantclaw::core::MemoryEngine::FormatContext(relevant);
+    spdlog::debug("[memory] formatted context:\n{}", memory_context);
     if (messages.empty()) {
-      messages.push_back({"system",
-                          "You are a helpful assistant. Use tools when "
-                          "they can help answer the user's question.",
-                          "",
-                          {}});
+      std::string sys_prompt = "You are a helpful assistant. Use tools when they can help answer the user's question.";
+      if (!memory_context.empty()) {
+        sys_prompt += "\n\n" + memory_context;
+      }
+      messages.push_back({"system", sys_prompt, "", {}});
       spdlog::info("[history] added default system message");
+
     }
 
     messages.push_back({"user", user_message, "", {}});

@@ -45,6 +45,8 @@ add_executable(quantclaw src/main.cpp
         src/tools/ToolRegistry.h
         src/tools/CalculatorTool.cc
         src/tools/CalculatorTool.h
+        src/core/MemoryEngine.cc
+        src/core/MemoryEngine.h
 )
 
 
