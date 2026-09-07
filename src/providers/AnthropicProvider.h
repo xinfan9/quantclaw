@@ -8,6 +8,7 @@ public:
     _api_key(std::move(api_key)), _model(std::move(model)), _base_url(std::move(base_url)) {}
 
   std::string Chat(std::vector<Message>& messages) override;
+  ChatResponse Chat(const std::vector<Message>& messages, const tools::ToolRegistry& tools) override;
 private:
   std::string _api_key;
   std::string _model;

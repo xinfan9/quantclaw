@@ -20,13 +20,13 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
-#        src/providers/AnthropicProvider.cc
-#        src/providers/AnthropicProvider.h
 add_executable(quantclaw src/main.cpp
         src/config.h
         src/providers/LLMProvider.h
         src/providers/OpenAIProvider.cc
         src/providers/OpenAIProvider.h
+        src/providers/AnthropicProvider.cc
+        src/providers/AnthropicProvider.h
         src/session/ChatHistory.cc
         src/session/ChatHistory.h
         src/platform.h
