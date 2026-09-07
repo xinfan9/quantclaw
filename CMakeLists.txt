@@ -18,7 +18,13 @@ FetchContent_Declare(
         GIT_TAG v3.11.3
         GIT_SHALLOW TRUE
 )
-FetchContent_MakeAvailable(nlohmann_json)
+FetchContent_Declare(
+        spdlog
+        GIT_REPOSITORY https://github.com/gabime/spdlog.git
+        GIT_TAG v1.14.1
+        GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(nlohmann_json spdlog)
 
 add_executable(quantclaw src/main.cpp
         src/config.h
@@ -49,6 +55,7 @@ target_include_directories(quantclaw PRIVATE
 target_link_libraries(quantclaw PRIVATE
         CURL::libcurl
         nlohmann_json::nlohmann_json
+        spdlog::spdlog
 )
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
