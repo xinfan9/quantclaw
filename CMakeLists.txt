@@ -24,7 +24,15 @@ FetchContent_Declare(
         GIT_TAG v1.14.1
         GIT_SHALLOW TRUE
 )
-FetchContent_MakeAvailable(nlohmann_json spdlog)
+
+FetchContent_Declare(
+        ixwebsocket
+        GIT_REPOSITORY https://github.com/machinezone/ixwebsocket.git
+        GIT_TAG v11.4.5
+        GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(nlohmann_json spdlog ixwebsocket)
 
 add_executable(quantclaw src/main.cpp
         src/config.h
@@ -55,6 +63,12 @@ add_executable(quantclaw src/main.cpp
         src/mcp/MCPClient.h
         src/mcp/MCPTool.cc
         src/mcp/MCPTool.h
+        src/gateway/JsonRpcMessage.cc
+        src/gateway/JsonRpcMessage.h
+        src/gateway/GatewayServer.cc
+        src/gateway/GatewayServer.h
+        src/gateway/GatewayClient.cc
+        src/gateway/GatewayClient.h
 )
 
 
@@ -66,6 +80,7 @@ target_link_libraries(quantclaw PRIVATE
         CURL::libcurl
         nlohmann_json::nlohmann_json
         spdlog::spdlog
+        ixwebsocket::ixwebsocket
 )
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

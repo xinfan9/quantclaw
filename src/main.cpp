@@ -1,11 +1,15 @@
+#include <cstdlib>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
 #include "config.h"
 #include "core/MemoryEngine.h"
+#include "gateway/GatewayClient.h"
+#include "gateway/GatewayServer.h"
 #include "mcp/MCPClient.h"
 #include "mcp/MCPTool.h"
 #include "providers/LLMProvider.h"
@@ -47,15 +51,56 @@ void SummarizeResponse(const quantclaw::providers::ChatResponse& response) {
   }
 }
 
+// ---- M9：通过网关发送请求 ----
+int RunAsClient(const std::string& user_message) {
+  try {
+    quantclaw::gateway::GatewayClient client;
+    client.Connect();
+    std::string reply = client.Chat(user_message);
+    spdlog::info("Assistant: {}", reply);
+    return 0;
+  } catch (const std::exception& e) {
+    spdlog::error("Gateway client error: {}", e.what());
+    return 1;
+  }
+}
+
+// ---- M9：启动网关服务器 ----
+int RunAsServer(const quantclaw::Config& cfg) {
+  try {
+    quantclaw::gateway::GatewayServer server(cfg);
+    server.Run();
+    return 0;
+  } catch (const std::exception& e) {
+    spdlog::error("Gateway server error: {}", e.what());
+    return 1;
+  }
+}
+
 } // namespace
 
 // TIP 要<b>Run</b>代码，请按 <shortcut actionId="Run"/> 或点击装订区域中的 <icon src="AllIcons.Actions.Execute"/> 图标。
 int main(int argc, char* argv[]) {
   spdlog::set_level(spdlog::level::debug);
 
+  // ---- M9：网关模式 ----
+  if (argc >= 2 && std::string(argv[1]) == "--gateway") {
+    auto cfg = quantclaw::Config::Load();
+    return RunAsServer(cfg);
+  }
+
   if (argc < 2) {
     spdlog::error("Usage: quantclaw <user_message>");
+    spdlog::error("       quantclaw --clear");
+    spdlog::error("       quantclaw --gateway");
     return 1;
+  }
+
+  // ---- M2：清空历史 ----
+  if (argc == 2 && std::string(argv[1]) == "--clear") {
+    quantclaw::session::ChatHistory().Clear();
+    spdlog::info("History cleared.");
+    return 0;
   }
 
   // 汇集参数
@@ -65,6 +110,12 @@ int main(int argc, char* argv[]) {
     user_message += argv[i];
   }
   spdlog::info("[input] user_message: {}", user_message);
+
+  // ---- M9：如果配置了 USE_GATEWAY，通过网关发送请求 ----
+  const char* use_gateway = std::getenv("QUANTCLAW_USE_GATEWAY");
+  if (use_gateway && std::string(use_gateway) == "1") {
+    return RunAsClient(user_message);
+  }
 
   try {
     auto cfg = quantclaw::Config::Load();
