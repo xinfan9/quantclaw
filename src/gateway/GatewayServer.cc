@@ -48,7 +48,7 @@ void GatewayServer::Run() {
       // 因为 ixwebsocket 内部用 shared_ptr 管理 WebSocket 生命周期，但回调里给你 weak_ptr 是为了避免循环引用：
       // 回调里不直接持有强引用，需要使用时再 lock() 升级。
       // weak_ptr：不拥有对象，只观察对象是否还活着，主要用来避免循环引用。
-      std::shared_ptr<ix::ConnectionState> connectionState) {
+      std::shared_ptr<ix::ConnectionState> /*connectionState*/) {
       // .lock() 尝试把弱指针提升为 std::shared_ptr<WebSocket>（强指针）
       // 如果对象还活着 → 返回有效的 shared_ptr，引用计数 +1，保证在 ws 作用域内对象不会被销毁
       // 如果对象已被销毁 → 返回空的 shared_ptr（等价于 nullptr）

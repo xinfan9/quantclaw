@@ -2,7 +2,7 @@
 
 
 #include<string>
-#include <ixwebsocket/ixwebsocket.h>
+#include <ixwebsocket/IXWebSocket.h>
 #include <mutex>
 
 namespace quantclaw::gateway {
