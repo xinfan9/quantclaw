@@ -1,32 +1,29 @@
 # QuantClaw
 
-QuantClaw 是一个模块化的 C++ AI 助手框架，支持多 LLM 提供商、插件扩展、MCP 工具、网关服务、会话管理和安全沙箱。
+QuantClaw 是一个 C++ AI 助手命令行/Web 网关程序，支持多 LLM 提供商、本地工具、MCP 外部工具、WebSocket 网关和 Web UI。
 
 ## 功能特性
 
-- **多 LLM 提供商支持**：OpenAI、OpenAI Codex、GitHub Copilot、Anthropic 等。
-- **统一 Provider 接口**：通过抽象基类 `LLMProvider` 实现不同提供商的即插即用。
-- **CLI 交互**：命令行入口，支持对话、配置管理、模型授权等命令。
-- **会话管理**：多轮对话、会话维护、上下文压缩与记忆搜索。
-- **工具系统**：工具注册、工具链编排、浏览器工具、MCP 工具管理。
-- **网关服务**：RPC 处理、守护进程管理、命令队列。
-- **插件系统**：插件清单、注册表、Sidecar、Hook 机制。
-- **安全沙箱**：工具权限、执行审批、RBAC、速率限制。
-- **Web 服务**：HTTP API 路由（基于 cpp-httplib）。
-- **跨平台**：支持 Unix/Linux/macOS 和 Windows。
+- **多 LLM 提供商**：OpenAI、Anthropic，通过 `ProviderFactory` 根据 `CLAW_MODEL` 前缀自动选择。
+- **CLI 对话**：命令行输入，自动保存多轮对话历史。
+- **工具系统**：内置 `calculator` 工具；可扩展注册 MCP 工具、Node.js Sidecar 工具。
+- **MCP 支持**：通过 stdio transport 启动外部 MCP 服务器，动态将其工具接入对话。
+- **网关模式**：`--gateway` 启动 WebSocket JSON-RPC 网关；客户端可通过 `QUANTCLAW_USE_GATEWAY=1` 走网关访问 LLM。
+- **Web UI**：`--web` 启动内置 HTTP 服务，浏览器访问即可聊天。
+- **对话管理**：基于文件的 `ChatHistory`，支持 `--clear` 清空历史。
+- **记忆检索**：`MemoryEngine` 根据用户问题搜索历史中的相关上下文。
+- **权限控制**：`PermissionManager` 在调用工具前进行审批（CLI 模式默认询问，Web UI 自动允许）。
 
 ## 依赖
 
-- C++17 编译器（GCC、Clang 或 MSVC）
-- CMake 3.20+
-- 必需依赖：
+- C++17 编译器（GCC、Clang）
+- CMake 4.0+
+- libcurl
+- 其他依赖通过 CMake `FetchContent` 自动下载：
+  - nlohmann/json
   - spdlog
-  - libcurl
-  - OpenSSL
-  - nlohmann/json（FetchContent 自动获取）
-  - IXWebSocket（优先 vcpkg，否则 FetchContent）
-  - cpp-httplib（优先 vcpkg，否则 FetchContent）
-- 测试依赖：GoogleTest（优先 vcpkg/系统，否则 FetchContent）
+  - IXWebSocket
+  - cpp-httplib
 
 ## 构建
 
@@ -35,92 +32,99 @@ cmake -B build
 cmake --build build
 ```
 
-### 构建选项
+构建产物为 `build/quantclaw`。
 
-```bash
-# 不构建测试
-cmake .. -DBUILD_TESTS=OFF
+## 环境变量
 
-# 启用 AddressSanitizer
-cmake .. -DENABLE_ASAN=ON
-
-# 启用 ThreadSanitizer（不能与 ASAN 同时启用）
-cmake .. -DENABLE_TSAN=ON
-
-# 启用 UndefinedBehaviorSanitizer
-cmake .. -DENABLE_UBSAN=ON
-```
+| 变量 | 说明 | 示例 |
+|---|---|---|
+| `CLAW_API_KEY` | LLM API 密钥 | `sk-...` |
+| `CLAW_MODEL` | 模型名称，决定使用哪个 Provider | `gpt-4o`、`claude-3-5-sonnet-20240620` |
+| `CLAW_BASE_URL` | LLM API 基础地址 | `https://api.openai.com/v1` |
+| `QUANTCLAW_USE_GATEWAY` | 设为 `1` 时通过网关客户端发送请求 | `1` |
+| `QUANTCLAW_MCP_SERVER` | MCP 服务器启动命令 | `npx -y @modelcontextprotocol/server-filesystem /tmp` |
+| `QUANTCLAW_SIDECAR_URL` | Node.js Sidecar 地址 | `http://127.0.0.1:18802` |
+| `QUANTCLAW_SIDECAR_DISABLED` | 设为 `1` 时禁用 Sidecar 工具注册 | `1` |
 
 ## 运行
 
+### CLI 直接对话
+
 ```bash
-#export OPENAI_API_KEY=sk-...
-./build/quantclaw 你好
+export CLAW_API_KEY=sk-...
+export CLAW_MODEL=gpt-4o
+export CLAW_BASE_URL=https://api.openai.com/v1
+
+./build/quantclaw "你好"
+./build/quantclaw "4 + 6 等于多少"
 ```
 
-## 测试
+### 清空历史
 
 ```bash
-cd build
-ctest --output-on-failure
+./build/quantclaw --clear
+# 或
+./build/quantclaw clear
 ```
 
-或直接运行测试二进制：
+### 网关模式
+
+终端 1：启动网关服务器
 
 ```bash
-./quantclaw_tests
+./build/quantclaw --gateway
+```
+
+终端 2：通过网关客户端发送请求
+
+```bash
+QUANTCLAW_USE_GATEWAY=1 ./build/quantclaw "你好"
+```
+
+网关默认监听 `ws://127.0.0.1:18800`。
+
+### Web UI
+
+```bash
+./build/quantclaw --web
+```
+
+默认监听 `http://127.0.0.1:8080`，浏览器打开即可使用。
+
+### 接入 MCP 工具
+
+```bash
+export QUANTCLAW_MCP_SERVER="npx -y @modelcontextprotocol/server-filesystem /tmp"
+./build/quantclaw "帮我列出 /tmp 下的文件"
+```
+
+### 禁用 Sidecar 警告
+
+如果不需要 Node.js Sidecar，可关闭连接尝试：
+
+```bash
+QUANTCLAW_SIDECAR_DISABLED=1 ./build/quantclaw "你好"
 ```
 
 ## 项目结构
 
 ```text
-include/quantclaw/          # 公共头文件
 src/
-  core/                     # 核心：配置、Agent 循环、会话压缩、内存管理等
-  auth/                     # 认证：Provider 认证、OpenAI Codex、GitHub Copilot
-  providers/                # LLM 提供商实现
-  cli/                      # 命令行接口
-  gateway/                  # 网关服务、RPC、守护进程
-  session/                  # 会话管理
-  tools/                    # 工具系统
-  mcp/                      # MCP 客户端/服务器/工具管理
-  channels/                 # 通道适配器与策略
-  plugins/                  # 插件系统
-  security/                 # 安全沙箱、权限、RBAC、速率限制
-  web/                      # Web 服务与 API 路由
-  platform/                 # 跨平台抽象（进程、服务、IPC）
-tests/                      # 单元测试与集成测试
+  main.cpp              # 入口：CLI、网关、Web UI 路由
+  config.h              # 配置加载（环境变量）
+  core/                 # MemoryEngine 记忆检索
+  providers/            # LLMProvider 抽象、OpenAI/Anthropic 实现、HttpClient、ProviderFactory
+  session/              # ChatHistory 对话历史
+  tools/                # Tool 抽象、ToolRegistry、CalculatorTool
+  mcp/                  # MCPClient、MCPTool、StdioTransport
+  gateway/              # GatewayServer（WebSocket）、GatewayClient、JsonRpcMessage
+  plugins/              # SidecarManager、SidecarTool（Node.js 扩展）
+  security/             # PermissionManager 权限审批
+  web/                  # WebServer（HTTP + 内置前端页面）
 ```
-
-## 主要模块
-
-| 模块 | 说明 |
-|------|------|
-| `core` | Agent 循环、配置加载、内存管理、Prompt 构建、上下文修剪 |
-| `providers` | OpenAI、Anthropic、GitHub Copilot 等 LLM 接入与错误处理 |
-| `cli` | 命令解析与交互命令实现 |
-| `gateway` | 本地网关服务、RPC 处理器、守护进程 |
-| `session` | 会话生命周期维护 |
-| `tools` | 工具注册、链式调用、浏览器自动化 |
-| `mcp` | Model Context Protocol 支持 |
-| `security` | 沙箱、执行审批、RBAC、速率限制 |
-| `web` | HTTP 服务与 REST API |
 
 ## 开发
 
-### Sanitizers
-
-项目支持三种 Sanitizer，用于调试内存、线程和未定义行为问题：
-
-- `ENABLE_ASAN`：AddressSanitizer + LeakSanitizer
-- `ENABLE_TSAN`：ThreadSanitizer
-- `ENABLE_UBSAN`：UndefinedBehaviorSanitizer
-
-ASAN 与 TSAN 不能同时启用。
-
-### 代码规范
-
 - 使用 C++17。
-- 目标编译选项开启 `-Wall -Wextra`。
+- 编译选项开启 `-Wall -Wextra -O2`。
 - 优先使用 RAII 管理资源。
-- 虚析构函数必须声明为 `virtual`。
