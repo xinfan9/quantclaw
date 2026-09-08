@@ -1,5 +1,7 @@
 #include "ToolRegistry.h"
 
+#include <spdlog/spdlog.h>
+
 namespace quantclaw::tools {
 
 void ToolRegistry::Register(std::unique_ptr<Tool> tool) {
@@ -33,7 +35,10 @@ std::string ToolRegistry::Execute(const std::string& name, const nlohmann::json&
       map.find(key) 返回 end()，不插入
       map.insert({key, val})插入（如果已存在则不插入）
    */
-  return _tools.at(name)->Execute(args);
+  spdlog::info("[tool execute] name={} args={}", name, args.dump());
+  std::string result = _tools.at(name)->Execute(args);
+  spdlog::info("[tool result] name={} result={}", name, result);
+  return result;
 }
 
 
