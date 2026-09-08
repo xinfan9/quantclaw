@@ -32,7 +32,14 @@ FetchContent_Declare(
         GIT_SHALLOW TRUE
 )
 
-FetchContent_MakeAvailable(nlohmann_json spdlog ixwebsocket)
+FetchContent_Declare(
+        cpp_httplib
+        GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+        GIT_TAG v0.15.3
+        GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(nlohmann_json spdlog ixwebsocket cpp_httplib)
 
 add_executable(quantclaw src/main.cpp
         src/config.h
@@ -69,6 +76,12 @@ add_executable(quantclaw src/main.cpp
         src/gateway/GatewayServer.h
         src/gateway/GatewayClient.cc
         src/gateway/GatewayClient.h
+        src/plugins/SidecarManager.cc
+        src/plugins/SidecarManager.h
+        src/plugins/SidecarTool.cc
+        src/plugins/SidecarTool.h
+        src/web/WebServer.cc
+        src/web/WebServer.h
 )
 
 
@@ -81,6 +94,7 @@ target_link_libraries(quantclaw PRIVATE
         nlohmann_json::nlohmann_json
         spdlog::spdlog
         ixwebsocket::ixwebsocket
+        httplib::httplib
 )
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

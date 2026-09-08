@@ -12,12 +12,14 @@
 #include "gateway/GatewayServer.h"
 #include "mcp/MCPClient.h"
 #include "mcp/MCPTool.h"
+#include "plugins/SidecarManager.h"
 #include "providers/LLMProvider.h"
 #include "providers/ProviderFactory.h"
 #include "security/PermissionManager.h"
 #include "session/ChatHistory.h"
 #include "tools/CalculatorTool.h"
 #include "tools/ToolRegistry.h"
+#include "web/WebServer.h"
 
 namespace {
 
@@ -51,6 +53,50 @@ void SummarizeResponse(const quantclaw::providers::ChatResponse& response) {
   }
 }
 
+std::vector<std::string> SplitCommand(const std::string& cmd) {
+  std::vector<std::string> parts;
+  std::string current;
+  for (char c : cmd) {
+    if (c == ' ') {
+      if (!current.empty()) {
+        parts.push_back(current);
+        current.clear();
+      }
+    } else {
+      current += c;
+    }
+  }
+  if (!current.empty()) parts.push_back(current);
+  return parts;
+}
+
+void RegisterMcpTools(quantclaw::tools::ToolRegistry& tools) {
+  const char* mcp_server = std::getenv("QUANTCLAW_MCP_SERVER");
+  if (!mcp_server) return;
+
+  try {
+    std::string server_cmd(mcp_server);
+    auto parts = SplitCommand(server_cmd);
+    if (parts.empty()) return;
+
+    std::string cmd = parts[0];
+    std::vector<std::string> args(parts.begin() + 1, parts.end());
+
+    auto mcp_client = std::make_shared<quantclaw::mcp::MCPClient>(cmd, args);
+    for (auto& def : mcp_client->ListTools()) {
+      tools.Register(std::make_unique<quantclaw::mcp::MCPTool>(mcp_client, def));
+    }
+    spdlog::info("MCP tools registered from: {}", cmd);
+  } catch (const std::exception& e) {
+    spdlog::error("Failed to initialize MCP server: {}", e.what());
+  }
+}
+
+void RegisterSidecarTools(quantclaw::tools::ToolRegistry& tools) {
+  quantclaw::plugins::SidecarManager sidecar;
+  sidecar.RegisterTools(tools);
+}
+
 // ---- M9：通过网关发送请求 ----
 int RunAsClient(const std::string& user_message) {
   try {
@@ -77,9 +123,20 @@ int RunAsServer(const quantclaw::Config& cfg) {
   }
 }
 
+// ---- M11：启动 Web UI 服务器 ----
+int RunWebUI(const quantclaw::Config& cfg) {
+  try {
+    quantclaw::web::WebServer server(cfg);
+    server.Run();
+    return 0;
+  } catch (const std::exception& e) {
+    spdlog::error("Web UI server error: {}", e.what());
+    return 1;
+  }
+}
+
 } // namespace
 
-// TIP 要<b>Run</b>代码，请按 <shortcut actionId="Run"/> 或点击装订区域中的 <icon src="AllIcons.Actions.Execute"/> 图标。
 int main(int argc, char* argv[]) {
   spdlog::set_level(spdlog::level::debug);
 
@@ -89,15 +146,23 @@ int main(int argc, char* argv[]) {
     return RunAsServer(cfg);
   }
 
+  // ---- M11：Web UI 模式 ----
+  if (argc >= 2 && std::string(argv[1]) == "--web") {
+    auto cfg = quantclaw::Config::Load();
+    return RunWebUI(cfg);
+  }
+
   if (argc < 2) {
     spdlog::error("Usage: quantclaw <user_message>");
     spdlog::error("       quantclaw --clear");
+    spdlog::error("       quantclaw clear");
     spdlog::error("       quantclaw --gateway");
+    spdlog::error("       quantclaw --web");
     return 1;
   }
 
   // ---- M2：清空历史 ----
-  if (argc == 2 && std::string(argv[1]) == "--clear") {
+  if (argc == 2 && (std::string(argv[1]) == "--clear" || std::string(argv[1]) == "clear")) {
     quantclaw::session::ChatHistory().Clear();
     spdlog::info("History cleared.");
     return 0;
@@ -128,42 +193,11 @@ int main(int argc, char* argv[]) {
     tools.Register(std::make_unique<quantclaw::tools::CalculatorTool>());
     spdlog::info("[tools] registered: calculator");
 
-    std::shared_ptr<quantclaw::mcp::MCPClient> mcp_client;
-    const char* mcp_server = std::getenv("QUANTCLAW_MCP_SERVER");
-    if (mcp_server) {
-      try {
-        std::string server_cmd(mcp_server);
-        std::vector<std::string> parts;
-        std::string current;
-        for (char c : server_cmd) {
-          if (c == ' ') {
-            if (!current.empty()) {
-              parts.push_back(current);
-              current.clear();
-            }
-          } else current += c;
-        }
+    // ---- M8：注册 MCP 工具 ----
+    RegisterMcpTools(tools);
 
-        if (!current.empty()) parts.push_back(current);
-
-        if (!parts.empty()) {
-          std::string cmd = parts[0];
-          std::vector args(parts.begin() + 1, parts.end());
-
-          mcp_client = std::make_shared<quantclaw::mcp::MCPClient>(cmd, args);
-
-          for (auto& def : mcp_client->ListTools()) {
-            tools.Register(std::make_unique<quantclaw::mcp::MCPTool>(mcp_client, def));
-          }
-
-          spdlog::info("MCP tools registered from: {}", cmd);
-        }
-      } catch (const std::exception& e) {
-        spdlog::error("Failed to initialize MCP server: {}", e.what());
-      }
-
-
-    }
+    // ---- M11：注册 Node.js Sidecar 插件工具 ----
+    RegisterSidecarTools(tools);
 
     quantclaw::security::PermissionManager permisson(quantclaw::security::PermissionManager::Mode::kAlwaysAsk);
 
