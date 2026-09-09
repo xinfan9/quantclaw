@@ -53,8 +53,6 @@ add_executable(quantclaw src/main.cpp
         src/platform.h
         src/providers/HttpClient.cc
         src/providers/HttpClient.h
-        src/providers/ProviderFactory.cc
-        src/providers/ProviderFactory.h
         src/tools/Tool.h
         src/tools/ToolRegistry.cc
         src/tools/ToolRegistry.h
@@ -82,6 +80,10 @@ add_executable(quantclaw src/main.cpp
         src/plugins/SidecarTool.h
         src/web/WebServer.cc
         src/web/WebServer.h
+        src/cli/CliManager.cc
+        src/cli/CliManager.h
+        src/providers/ProviderRegistry.cc
+        src/providers/ProviderRegistry.h
 )
 
 

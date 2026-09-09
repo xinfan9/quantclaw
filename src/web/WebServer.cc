@@ -4,7 +4,6 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
-#include <atomic>
 #include <chrono>
 #include <memory>
 #include <thread>
@@ -15,11 +14,11 @@
 #include "../mcp/MCPTool.h"
 #include "../plugins/SidecarManager.h"
 #include "../providers/LLMProvider.h"
-#include "../providers/ProviderFactory.h"
 #include "../security/PermissionManager.h"
 #include "../session/ChatHistory.h"
 #include "../tools/CalculatorTool.h"
 #include "../tools/ToolRegistry.h"
+#include "providers/ProviderRegistry.h"
 
 namespace quantclaw::web {
 
@@ -208,7 +207,14 @@ void RegisterSidecarTools(quantclaw::tools::ToolRegistry& tools) {
 }
 
 std::string ChatWithLLM(const Config& cfg, const std::string& user_message) {
-  auto provider = providers::CreateProvider(cfg);
+  providers::ProviderRegistry registry;
+  for (const auto& [id, pc] : cfg.providers) {
+    registry.AddProvider({id, pc.api_key, pc.base_url});
+  }
+  for (const auto& [alias, target] : cfg.aliases) {
+    registry.AddAlias(alias, target);
+  }
+  auto provider = registry.CreateProvider(cfg);
 
   tools::ToolRegistry tools;
   tools.Register(std::make_unique<tools::CalculatorTool>());

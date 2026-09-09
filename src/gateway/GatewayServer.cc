@@ -8,7 +8,7 @@
 
 #include "JsonRpcMessage.h"
 #include "core/MemoryEngine.h"
-#include "providers/ProviderFactory.h"
+#include "providers/ProviderRegistry.h"
 #include "session/ChatHistory.h"
 #include "spdlog/spdlog.h"
 #include "tools/CalculatorTool.h"
@@ -23,7 +23,14 @@ GatewayServer::GatewayServer(Config  cfg, int port, std::string  host)
 
   _permission = std::make_unique<security::PermissionManager>(security::PermissionManager::Mode::kAlwaysAsk);
 
-  _provider = providers::CreateProvider(_cfg);
+  providers::ProviderRegistry registry;
+  for (const auto& [id, pc] : _cfg.providers)
+    registry.AddProvider({id, pc.api_key, pc.base_url});
+
+  for (const auto& [alias, target] : _cfg.aliases)
+    registry.AddAlias(alias, target);
+
+  _provider = registry.CreateProvider(_cfg);
 }
 
 void GatewayServer::Run() {
@@ -187,6 +194,5 @@ nlohmann::json GatewayServer::ExecuteToolLoop(const std::vector<providers::Messa
   spdlog::info("[gateway] Final reply: {}", final_reply);
   return final_reply;
 }
-
 
 }

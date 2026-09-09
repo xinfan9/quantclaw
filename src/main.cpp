@@ -1,20 +1,20 @@
-#include <cstdlib>
+#include <iostream>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
+#include "cli/CliManager.h"
 #include "config.h"
 #include "core/MemoryEngine.h"
-#include "gateway/GatewayClient.h"
 #include "gateway/GatewayServer.h"
 #include "mcp/MCPClient.h"
 #include "mcp/MCPTool.h"
 #include "plugins/SidecarManager.h"
+#include "platform.h"
 #include "providers/LLMProvider.h"
-#include "providers/ProviderFactory.h"
+#include "providers/ProviderRegistry.h"
 #include "security/PermissionManager.h"
 #include "session/ChatHistory.h"
 #include "tools/CalculatorTool.h"
@@ -42,13 +42,15 @@ void SummarizeMessages(const std::vector<quantclaw::providers::Message>& message
 
 void SummarizeResponse(const quantclaw::providers::ChatResponse& response) {
   if (response.isToolCall()) {
-    spdlog::info("[llm response] type=tool_call content_len={}", response.content.size());
+    spdlog::info("[llm response] type=tool_call content_len={}",
+                 response.content.size());
     for (const auto& tc : response.tool_calls) {
       spdlog::info("  tool_call: id={} name={} args={}",
                    tc.id, tc.name, tc.arguments.dump());
     }
   } else {
-    spdlog::info("[llm response] type=content content_len={}", response.content.size());
+    spdlog::info("[llm response] type=content content_len={}",
+                 response.content.size());
     spdlog::debug("  content: {}", response.content);
   }
 }
@@ -97,109 +99,57 @@ void RegisterSidecarTools(quantclaw::tools::ToolRegistry& tools) {
   sidecar.RegisterTools(tools);
 }
 
-// ---- M9：通过网关发送请求 ----
-int RunAsClient(const std::string& user_message) {
-  try {
-    quantclaw::gateway::GatewayClient client;
-    client.Connect();
-    std::string reply = client.Chat(user_message);
-    spdlog::info("Assistant: {}", reply);
-    return 0;
-  } catch (const std::exception& e) {
-    spdlog::error("Gateway client error: {}", e.what());
-    return 1;
+quantclaw::providers::ProviderRegistry BuildProviderRegistry(
+    const quantclaw::Config& cfg) {
+  quantclaw::providers::ProviderRegistry registry;
+
+  // Add per-provider config entries.
+  for (const auto& [id, pc] : cfg.providers) {
+    registry.AddProvider({id, pc.api_key, pc.base_url});
   }
+
+  // Add model aliases.
+  for (const auto& [alias, target] : cfg.aliases) {
+    registry.AddAlias(alias, target);
+  }
+
+  return registry;
 }
 
-// ---- M9：启动网关服务器 ----
-int RunAsServer(const quantclaw::Config& cfg) {
-  try {
-    quantclaw::gateway::GatewayServer server(cfg);
-    server.Run();
-    return 0;
-  } catch (const std::exception& e) {
-    spdlog::error("Gateway server error: {}", e.what());
-    return 1;
-  }
-}
-
-// ---- M11：启动 Web UI 服务器 ----
-int RunWebUI(const quantclaw::Config& cfg) {
-  try {
-    quantclaw::web::WebServer server(cfg);
-    server.Run();
-    return 0;
-  } catch (const std::exception& e) {
-    spdlog::error("Web UI server error: {}", e.what());
-    return 1;
-  }
-}
-
-} // namespace
-
-int main(int argc, char* argv[]) {
-  spdlog::set_level(spdlog::level::debug);
-
-  // ---- M9：网关模式 ----
-  if (argc >= 2 && std::string(argv[1]) == "--gateway") {
-    auto cfg = quantclaw::Config::Load();
-    return RunAsServer(cfg);
-  }
-
-  // ---- M11：Web UI 模式 ----
-  if (argc >= 2 && std::string(argv[1]) == "--web") {
-    auto cfg = quantclaw::Config::Load();
-    return RunWebUI(cfg);
-  }
-
-  if (argc < 2) {
-    spdlog::error("Usage: quantclaw <user_message>");
-    spdlog::error("       quantclaw --clear");
-    spdlog::error("       quantclaw clear");
-    spdlog::error("       quantclaw --gateway");
-    spdlog::error("       quantclaw --web");
-    return 1;
-  }
-
-  // ---- M2：清空历史 ----
-  if (argc == 2 && (std::string(argv[1]) == "--clear" || std::string(argv[1]) == "clear")) {
-    quantclaw::session::ChatHistory().Clear();
-    spdlog::info("History cleared.");
-    return 0;
-  }
-
-  // 汇集参数
+// ---- default chat command ----
+int ChatCommand(int argc, char** argv) {
   std::string user_message;
   for (int i = 1; i < argc; ++i) {
     if (!user_message.empty()) user_message += " ";
     user_message += argv[i];
   }
-  spdlog::info("[input] user_message: {}", user_message);
-
-  // ---- M9：如果配置了 USE_GATEWAY，通过网关发送请求 ----
-  const char* use_gateway = std::getenv("QUANTCLAW_USE_GATEWAY");
-  if (use_gateway && std::string(use_gateway) == "1") {
-    return RunAsClient(user_message);
+  if (user_message.empty()) {
+    std::cerr << "Usage: quantclaw <user message>\n";
+    return 1;
   }
+  spdlog::info("[input] user_message: {}", user_message);
 
   try {
     auto cfg = quantclaw::Config::Load();
     spdlog::info("[config] model={} base_url={}", cfg.model, cfg.base_url);
 
-    auto provider = quantclaw::providers::CreateProvider(cfg);
-    spdlog::info("[provider] created {}", cfg.model.rfind("anthropic", 0) == 0 ? "AnthropicProvider" : "OpenAIProvider");
+    auto registry = BuildProviderRegistry(cfg);
+    auto provider = registry.CreateProvider(cfg);
+    if (!provider) {
+      spdlog::error("Failed to create provider for model: {}", cfg.model);
+      return 1;
+    }
+    spdlog::info("[provider] created {}", cfg.model);
 
     quantclaw::tools::ToolRegistry tools;
     tools.Register(std::make_unique<quantclaw::tools::CalculatorTool>());
     spdlog::info("[tools] registered: calculator");
 
-    // ---- M8：注册 MCP 工具 ----
     RegisterMcpTools(tools);
-
-    // ---- M11：注册 Node.js Sidecar 插件工具 ----
     RegisterSidecarTools(tools);
 
-    quantclaw::security::PermissionManager permisson(quantclaw::security::PermissionManager::Mode::kAlwaysAsk);
+    quantclaw::security::PermissionManager permission(
+        quantclaw::security::PermissionManager::Mode::kAlwaysAsk);
 
     quantclaw::session::ChatHistory history;
     auto messages = history.Load();
@@ -214,16 +164,18 @@ int main(int argc, char* argv[]) {
 
     quantclaw::core::MemoryEngine memory(messages);
     auto relevant = memory.Search(user_message, 3);
-    std::string memory_context = quantclaw::core::MemoryEngine::FormatContext(relevant);
+    std::string memory_context =
+        quantclaw::core::MemoryEngine::FormatContext(relevant);
     spdlog::debug("[memory] formatted context:\n{}", memory_context);
     if (messages.empty()) {
-      std::string sys_prompt = "You are a helpful assistant. Use tools when they can help answer the user's question.";
+      std::string sys_prompt =
+          "You are a helpful assistant. Use tools when they can help answer "
+          "the user's question.";
       if (!memory_context.empty()) {
         sys_prompt += "\n\n" + memory_context;
       }
       messages.push_back({"system", sys_prompt, "", {}});
       spdlog::info("[history] added default system message");
-
     }
 
     messages.push_back({"user", user_message, "", {}});
@@ -249,7 +201,8 @@ int main(int argc, char* argv[]) {
       messages.push_back(assistant_msg);
 
       for (const auto& tool_call : response.tool_calls) {
-        if (!permisson.RequestPermission(tool_call.name, tool_call.arguments.dump())) {
+        if (!permission.RequestPermission(tool_call.name,
+                                          tool_call.arguments.dump())) {
           spdlog::info("[tool permission] denied {}", tool_call.name);
           messages.push_back({"tool", "Permission denied", tool_call.id, {}});
           continue;
@@ -274,4 +227,120 @@ int main(int argc, char* argv[]) {
     spdlog::error("Error: {}", e.what());
     return 1;
   }
+}
+
+// ---- gateway server command ----
+int GatewayCommand(int /*argc*/, char** /*argv*/) {
+  try {
+    auto cfg = quantclaw::Config::Load();
+    quantclaw::gateway::GatewayServer server(cfg);
+    server.Run();
+    return 0;
+  } catch (const std::exception& e) {
+    spdlog::error("Gateway server error: {}", e.what());
+    return 1;
+  }
+}
+
+// ---- web ui command ----
+int WebCommand(int /*argc*/, char** /*argv*/) {
+  try {
+    auto cfg = quantclaw::Config::Load();
+    quantclaw::web::WebServer server(cfg);
+    server.Run();
+    return 0;
+  } catch (const std::exception& e) {
+    spdlog::error("Web UI server error: {}", e.what());
+    return 1;
+  }
+}
+
+// ---- clear history command ----
+int ClearCommand(int /*argc*/, char** /*argv*/) {
+  quantclaw::session::ChatHistory().Clear();
+  spdlog::info("History cleared.");
+  return 0;
+}
+
+// ---- models command ----
+int ModelsCommand(int argc, char** argv) {
+  auto cfg = quantclaw::Config::Load();
+  auto registry = BuildProviderRegistry(cfg);
+
+  if (argc >= 3 && std::string(argv[2]) == "set") {
+    if (argc < 4) {
+      std::cerr << "Usage: quantclaw models set <model>\n";
+      return 1;
+    }
+    std::cerr << "Model set is not yet persisted; use CLAW_MODEL env var.\n";
+    return 1;
+  }
+
+  std::cout << "Current model: " << cfg.model << "\n";
+  std::cout << "Providers:\n";
+  for (const auto& id : registry.ProviderIds()) {
+    std::cout << "  " << id << "\n";
+  }
+  auto aliases = registry.Aliases();
+  if (!aliases.empty()) {
+    std::cout << "Aliases:\n";
+    for (const auto& [alias, target] : aliases) {
+      std::cout << "  " << alias << " -> " << target << "\n";
+    }
+  }
+  return 0;
+}
+
+// ---- config command ----
+int ConfigCommand(int /*argc*/, char** /*argv*/) {
+  auto cfg = quantclaw::Config::Load();
+  std::cout << "Config path: " << quantclaw::Config::DefaultPath() << "\n";
+  std::cout << "model: " << cfg.model << "\n";
+  std::cout << "base_url: " << cfg.base_url << "\n";
+  std::cout << "providers: " << cfg.providers.size() << "\n";
+  std::cout << "aliases: " << cfg.aliases.size() << "\n";
+  return 0;
+}
+
+}  // namespace
+
+int main(int argc, char* argv[]) {
+  spdlog::set_level(spdlog::level::debug);
+
+  quantclaw::platform::ensure_dir(quantclaw::platform::base_dir());
+
+  quantclaw::cli::CliManager cli;
+
+  // Default behavior: bare message -> chat command.
+  cli.AddCommand({"chat",
+                  "Send a message to the agent",
+                  {},
+                  ChatCommand});
+
+  cli.AddCommand({"--gateway",
+                  "Run the WebSocket Gateway server",
+                  {"gateway"},
+                  GatewayCommand});
+
+  cli.AddCommand({"--web",
+                  "Run the Web UI server",
+                  {"web"},
+                  WebCommand});
+
+  cli.AddCommand({"--clear",
+                  "Clear chat history",
+                  {"clear"},
+                  ClearCommand});
+
+  cli.AddCommand({"models",
+                  "Show current model, providers and aliases",
+                  {"m"},
+                  ModelsCommand});
+
+  cli.AddCommand({"config",
+                  "Show current configuration",
+                  {"c"},
+                  ConfigCommand});
+
+  return cli.Run(argc, argv);
 }
