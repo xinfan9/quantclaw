@@ -9,7 +9,8 @@
 
 #include "config.h"
 #include "providers/LLMProvider.h"
-#include "security/PermissionManager.h"
+#include "security/ExecApprovalManager.h"
+#include "security/ToolPermissionChecker.h"
 #include "tools/ToolRegistry.h"
 
 namespace quantclaw::gateway {
@@ -31,7 +32,8 @@ private:
   // 并阻止有害的跨线程指令重排序。
   std::atomic<bool> _running{false};
   std::unique_ptr<tools::ToolRegistry> _tools;
-  std::unique_ptr<security::PermissionManager> _permission;
+  std::unique_ptr<security::ToolPermissionChecker> _permission_checker;
+  std::unique_ptr<security::ExecApprovalManager> _approval_manager;
   std::unique_ptr<providers::LLMProvider> _provider;
 
   void HandleChat(const std::shared_ptr<ix::WebSocket>& websocket,

@@ -21,7 +21,16 @@ GatewayServer::GatewayServer(Config  cfg, int port, std::string  host)
   _tools = std::make_unique<tools::ToolRegistry>();
   _tools->Register(std::make_unique<tools::CalculatorTool>());
 
-  _permission = std::make_unique<security::PermissionManager>(security::PermissionManager::Mode::kAlwaysAsk);
+  // 工具级权限：根据 allow/deny 列表决定是否允许调用某工具
+  _permission_checker = std::make_unique<security::ToolPermissionChecker>(
+      _cfg.tool_permissions.allow, _cfg.tool_permissions.deny);
+
+  // 执行级审批：对危险命令进行交互式确认（Gateway 是交互式服务，可使用 on_miss/always 模式）
+  security::ExecApprovalConfig exec_cfg;
+  exec_cfg.mode = security::ParseAskMode(_cfg.exec_approval.mode);
+  exec_cfg.timeout_seconds = _cfg.exec_approval.timeout_seconds;
+  exec_cfg.allowlist = _cfg.exec_approval.allowlist;
+  _approval_manager = std::make_unique<security::ExecApprovalManager>(std::move(exec_cfg));
 
   providers::ProviderRegistry registry;
   for (const auto& [id, pc] : _cfg.providers)
@@ -37,7 +46,7 @@ void GatewayServer::Run() {
   ix::WebSocketServer server(_port, _host);
 
   server.setOnConnectionCallback(
-    // [this] 捕获表示这个 lambda 可以访问 GatewayServer 的成员变量和成员函数，比如 _tools、_provider、_permission 等。
+    // [this] 捕获表示这个 lambda 可以访问 GatewayServer 的成员变量和成员函数，比如 _tools、_provider、_permission_checker、_approval_manager 等。
     //     | 捕获方式 | 说明 |
     // | --- | --- |
     // | [] | 不捕获 |
@@ -179,9 +188,18 @@ nlohmann::json GatewayServer::ExecuteToolLoop(const std::vector<providers::Messa
     current_messages.push_back(assistant_msg);
 
     for (const auto& tc : response.tool_calls) {
-      if (!_permission->RequestPermission(tc.name, tc.arguments.dump())) {
-        spdlog::info("[gateway] Tool {}", tc.name);
-        current_messages.push_back({"tool", "user denied permission", tc.id, {}});
+      // 第一步：工具级 allow/deny 检查
+      if (!_permission_checker->IsAllowed(tc.name)) {
+        spdlog::info("[gateway] Tool {} denied by permission checker", tc.name);
+        current_messages.push_back({"tool", "tool permission denied", tc.id, {}});
+        continue;
+      }
+
+      // 第二步：执行级审批（危险命令交互式确认）
+      std::string command_summary = tc.name + " " + tc.arguments.dump();
+      if (!_approval_manager->RequestApproval(command_summary)) {
+        spdlog::info("[gateway] Tool {} execution approval denied", tc.name);
+        current_messages.push_back({"tool", "execution approval denied", tc.id, {}});
         continue;
       }
 

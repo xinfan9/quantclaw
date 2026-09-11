@@ -14,7 +14,8 @@
 #include "../mcp/MCPTool.h"
 #include "../plugins/SidecarManager.h"
 #include "../providers/LLMProvider.h"
-#include "../security/PermissionManager.h"
+#include "../security/ExecApprovalManager.h"
+#include "../security/ToolPermissionChecker.h"
 #include "../session/ChatHistory.h"
 #include "../tools/CalculatorTool.h"
 #include "../tools/ToolRegistry.h"
@@ -225,9 +226,14 @@ std::string ChatWithLLM(const Config& cfg, const std::string& user_message) {
   // ---- M11：注册 Node.js Sidecar 插件工具 ----
   RegisterSidecarTools(tools);
 
-  // Web UI 后台无法交互式询问，使用自动允许
-  security::PermissionManager permission(
-      security::PermissionManager::Mode::kAutoAllow);
+  // Web UI 后台无法交互式询问，因此关闭执行级审批；但仍保留工具级 allow/deny 检查
+  security::ToolPermissionChecker permission_checker(
+      cfg.tool_permissions.allow, cfg.tool_permissions.deny);
+
+  security::ExecApprovalConfig exec_cfg;
+  exec_cfg.mode = security::AskMode::kOff; // 后台服务无法进行交互式确认
+  exec_cfg.allowlist = cfg.exec_approval.allowlist;
+  security::ExecApprovalManager approval_manager(std::move(exec_cfg));
 
   session::ChatHistory history;
   auto messages = history.Load();
@@ -268,10 +274,19 @@ std::string ChatWithLLM(const Config& cfg, const std::string& user_message) {
     messages.push_back(assistant_msg);
 
     for (const auto& tool_call : response.tool_calls) {
-      if (!permission.RequestPermission(tool_call.name, tool_call.arguments.dump())) {
-        messages.push_back({"tool", "Permission denied", tool_call.id, {}});
+      // 工具级 allow/deny 检查
+      if (!permission_checker.IsAllowed(tool_call.name)) {
+        messages.push_back({"tool", "Tool permission denied", tool_call.id, {}});
         continue;
       }
+
+      // 执行级审批（Web 后台已关闭交互式确认，仅通过白名单判断）
+      std::string command_summary = tool_call.name + " " + tool_call.arguments.dump();
+      if (!approval_manager.RequestApproval(command_summary)) {
+        messages.push_back({"tool", "Execution approval denied", tool_call.id, {}});
+        continue;
+      }
+
       std::string result = tools.Execute(tool_call.name, tool_call.arguments);
       messages.push_back({"tool", result, tool_call.id, {}});
     }
