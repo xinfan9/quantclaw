@@ -14,6 +14,9 @@ public:
   OpenAIProvider(std::string api_key, std::string model, std::string base_url);
   std::string Chat(std::vector<Message>&) override;
   ChatResponse Chat(const std::vector<Message>& messages, const tools::ToolRegistry& tools) override;
+  ChatResponse StreamChat(const std::vector<Message>& messages,
+                          const tools::ToolRegistry& tools,
+                          TokenCallback on_token) override;
 
 private:
   std::string _api_key;

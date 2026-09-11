@@ -25,7 +25,7 @@ bool ExecAllowlist::Matches(const std::string& command) const {
 
 bool ExecAllowlist::GlobMatch(const std::string& pattern,
                               const std::string& text) {
-  // Dynamic programming table for glob matching.
+  // glob 匹配的动态规划表。
   std::vector<std::vector<bool>> dp(pattern.size() + 1,
                                     std::vector<bool>(text.size() + 1, false));
   dp[0][0] = true;
@@ -63,7 +63,7 @@ bool ExecApprovalManager::RequestApproval(
   if (allowlist_.Matches(command_summary)) return true;
   if (config_.mode == AskMode::kAlways) return AskUser(command_summary);
 
-  // kOnMiss: ask only for dangerous-looking commands.
+  // kOnMiss 模式：仅对看起来有风险的命令询问用户。
   if (IsDangerous(command_summary)) return AskUser(command_summary);
   return true;
 }

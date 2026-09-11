@@ -2,6 +2,7 @@
 #include "HttpClient.h"
 
 #include <nlohmann/json.hpp>
+#include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <vector>
 
@@ -64,6 +65,7 @@ ChatResponse OpenAIProvider::Chat(const std::vector<Message>& messages, const to
 };
 
   std::string response = HttpPost(url, headers, request_body);
+  spdlog::debug("[openai] response received, length={}", response.size());
 
   auto json = nlohmann::json::parse(response, nullptr, false);
   if (json.is_discarded()) {
@@ -86,6 +88,9 @@ ChatResponse OpenAIProvider::Chat(const std::vector<Message>& messages, const to
       !choice["message"]["content"].is_null()) {
     result.content = choice["message"]["content"].get<std::string>();
       }
+  spdlog::debug("[openai] content.length={}, has_tool_calls={}",
+                result.content.size(),
+                choice["message"].contains("tool_calls"));
 
   // 解析 tool_calls
   if (choice.contains("message") && choice["message"].contains("tool_calls")) {
@@ -142,5 +147,64 @@ std::string OpenAIProvider::Chat(std::vector<Message>& msg) {
       json["choices"][0]["message"].contains("content")) return json["choices"][0]["message"]["content"].get<std::string>();
 
   throw std::runtime_error("Unexpected response format: " + response);
+}
+
+ChatResponse OpenAIProvider::StreamChat(const std::vector<Message>& messages,
+                                        const tools::ToolRegistry& tools,
+                                        TokenCallback on_token) {
+  nlohmann::json body;
+  body["model"] = _model;
+  body["messages"] = MessagesToJson(messages);
+  body["stream"] = true;
+
+  if (!tools.Empty()) {
+    body["tools"] = tools.GetDefinitions();
+  }
+
+  std::string url = _base_url + "/chat/completions";
+  std::string request_body = body.dump();
+
+  std::vector<HttpHeader> headers = {
+      {"Content-Type", "application/json"},
+      {"Authorization", "Bearer " + _api_key},
+  };
+
+  ChatResponse result;
+  bool has_tool_calls = false;
+
+  HttpStreamPost(url, headers, request_body,
+      [&result, &on_token, &has_tool_calls](const std::string& data) {
+        auto json = nlohmann::json::parse(data, nullptr, false);
+        if (json.is_discarded()) return;
+
+        if (!json.contains("choices") || json["choices"].empty()) return;
+        const auto& choice = json["choices"][0];
+
+        if (!choice.contains("delta")) return;
+        const auto& delta = choice["delta"];
+
+        // 文本 token
+        if (delta.contains("content") && !delta["content"].is_null()) {
+          std::string token = delta["content"].get<std::string>();
+          result.content += token;
+          if (on_token) on_token(token);
+        }
+
+        // tool_calls delta（不支持流式 tool_calls，标记回退）
+        if (delta.contains("tool_calls")) {
+          has_tool_calls = true;
+        }
+      });
+
+  spdlog::debug("[openai stream] received, content.length={}, has_tool_calls={}",
+                result.content.size(), has_tool_calls);
+
+  // 如果检测到 tool_calls，回退到非流式调用获取完整 tool_call 信息
+  if (has_tool_calls) {
+    spdlog::debug("[openai stream] tool_calls detected, falling back to non-stream");
+    return Chat(messages, tools);
+  }
+
+  return result;
 }
 }

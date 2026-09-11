@@ -18,6 +18,8 @@
 #include "../security/ToolPermissionChecker.h"
 #include "../session/ChatHistory.h"
 #include "../tools/CalculatorTool.h"
+#include "../tools/SubagentTool.h"
+#include "../core/SubagentManager.h"
 #include "../tools/ToolRegistry.h"
 #include "providers/ProviderRegistry.h"
 
@@ -116,12 +118,13 @@ constexpr const char* kIndexHtml = R"html(
     const input = document.getElementById('message-input');
     const sendBtn = document.getElementById('send-btn');
 
-    function appendMessage(role, text) {
+    function appendMessage(role, text, streaming = false) {
       const div = document.createElement('div');
-      div.className = 'message ' + role;
+      div.className = 'message ' + role + (streaming ? ' streaming' : '');
       div.textContent = text;
       chat.appendChild(div);
       chat.scrollTop = chat.scrollHeight;
+      return div;
     }
 
     async function sendMessage() {
@@ -131,24 +134,58 @@ constexpr const char* kIndexHtml = R"html(
       input.value = '';
       sendBtn.disabled = true;
 
-      const loading = document.createElement('div');
-      loading.className = 'message assistant loading';
-      loading.textContent = '思考中...';
-      chat.appendChild(loading);
-      chat.scrollTop = chat.scrollHeight;
+      const assistantDiv = appendMessage('assistant', '思考中...', true);
+      let content = '';
 
       try {
-        const res = await fetch('/api/chat', {
+        const res = await fetch('/api/chat/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ message: text })
         });
-        const data = await res.json();
-        loading.remove();
-        appendMessage('assistant', data.reply || '（无回复）');
+
+        if (!res.ok) {
+          let msg = '请求失败 (HTTP ' + res.status + ')';
+          try {
+            const errBody = await res.json();
+            if (errBody.error) msg = errBody.error;
+          } catch (_) {}
+          throw new Error(msg);
+        }
+
+        // 读取 SSE 流式事件
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const payload = line.slice(6).trim();
+            if (!payload) continue;
+            let event;
+            try { event = JSON.parse(payload); } catch (e) { continue; }
+            if (event.type === 'token') {
+              content += event.content || '';
+              assistantDiv.textContent = content;
+              chat.scrollTop = chat.scrollHeight;
+            } else if (event.type === 'done') {
+              assistantDiv.classList.remove('streaming');
+            } else if (event.type === 'error') {
+              throw new Error(event.message || 'Unknown error');
+            }
+          }
+        }
+        assistantDiv.classList.remove('streaming');
       } catch (e) {
-        loading.remove();
-        appendMessage('assistant', '错误：' + e.message);
+        assistantDiv.classList.remove('streaming');
+        assistantDiv.textContent = '错误：' + e.message;
       } finally {
         sendBtn.disabled = false;
         input.focus();
@@ -207,7 +244,13 @@ void RegisterSidecarTools(quantclaw::tools::ToolRegistry& tools) {
   sidecar.RegisterTools(tools);
 }
 
-std::string ChatWithLLM(const Config& cfg, const std::string& user_message) {
+std::string ChatWithLLM(const Config& cfg, const std::string& user_message,
+                        int depth = 0,
+                        providers::TokenCallback on_token = nullptr) {
+  std::string prefix = depth > 0
+      ? "[L" + std::to_string(depth) + "] "
+      : "";
+  spdlog::info("{}[chat] user message: {}", prefix, user_message);
   providers::ProviderRegistry registry;
   for (const auto& [id, pc] : cfg.providers) {
     registry.AddProvider({id, pc.api_key, pc.base_url});
@@ -216,9 +259,20 @@ std::string ChatWithLLM(const Config& cfg, const std::string& user_message) {
     registry.AddAlias(alias, target);
   }
   auto provider = registry.CreateProvider(cfg);
+  if (!provider) {
+    throw std::runtime_error("No provider available for model: " + cfg.model);
+  }
 
   tools::ToolRegistry tools;
   tools.Register(std::make_unique<tools::CalculatorTool>());
+
+  // ---- 注册 Subagent 工具 ----
+  auto subagent_mgr = std::make_shared<core::SubagentManager>();
+  subagent_mgr->SetRunner([&cfg, depth](const std::string& task) -> std::string {
+    spdlog::info("[subagent] L{} -> L{} spawning subtask: {}", depth, depth + 1, task);
+    return ChatWithLLM(cfg, task, depth + 1);
+  });
+  tools.Register(std::make_unique<tools::SubagentTool>(subagent_mgr));
 
   // ---- M8：注册 MCP 工具 ----
   RegisterMcpTools(tools);
@@ -259,7 +313,14 @@ std::string ChatWithLLM(const Config& cfg, const std::string& user_message) {
 
   std::string final_reply;
   for (int iteration = 0; iteration < 5; ++iteration) {
-    auto response = provider->Chat(messages, tools);
+    providers::ChatResponse response;
+    // 仅在第一轮且无工具时使用流式；后续轮次（工具调用后）必须用非流式
+    bool use_stream = (iteration == 0 && on_token);
+    if (use_stream) {
+      response = provider->StreamChat(messages, tools, on_token);
+    } else {
+      response = provider->Chat(messages, tools);
+    }
 
     if (!response.isToolCall()) {
       final_reply = response.content;
@@ -292,7 +353,15 @@ std::string ChatWithLLM(const Config& cfg, const std::string& user_message) {
     }
   }
 
-  history.Save(messages);
+  spdlog::debug("[chat] LLM response received, content length={}", final_reply.size());
+
+  try {
+    history.Save(messages);
+  } catch (const std::exception& e) {
+    spdlog::warn("[chat] failed to save history: {}", e.what());
+  }
+
+  spdlog::debug("[chat] returning reply, length={}", final_reply.size());
   return final_reply;
 }
 
@@ -333,6 +402,65 @@ void WebServer::Run() {
       error["error"] = e.what();
       res.set_content(error.dump(), "application/json");
     }
+  });
+
+  // SSE 流式对话端点：将完整回复按字符切分后逐步推送，前端可实时显示生成过程。
+  server.Post("/api/chat/stream", [this](const httplib::Request& req,
+                                          httplib::Response& res) {
+    std::string user_message;
+    try {
+      auto body = nlohmann::json::parse(req.body);
+      user_message = body.value("message", "");
+    } catch (const std::exception& e) {
+      res.status = 400;
+      res.set_content(R"({"error":"Invalid JSON"})", "application/json");
+      return;
+    }
+
+    if (user_message.empty()) {
+      res.status = 400;
+      res.set_content(R"({"error":"Missing 'message' field"})",
+                      "application/json");
+      return;
+    }
+
+    spdlog::info("[web] chat stream request: {}", user_message);
+
+    res.set_header("Cache-Control", "no-cache");
+    res.set_chunked_content_provider(
+        "text/event-stream",
+        [this, user_message](size_t /*offset*/, httplib::DataSink& sink) -> bool {
+          // 流式回调：每收到一个 LLM token 就立即写入 DataSink
+          providers::TokenCallback on_token = [&sink](const std::string& token) {
+            nlohmann::json j;
+            j["type"] = "token";
+            j["content"] = token;
+            std::string event = "data: " + j.dump() + "\n\n";
+            sink.write(event.data(), event.size());
+          };
+
+          try {
+            std::string reply = ChatWithLLM(_cfg, user_message, 0, on_token);
+            (void)reply;  // 内容已通过 on_token 实时推送
+          } catch (const std::exception& e) {
+            spdlog::error("[web] chat stream error: {}", e.what());
+            nlohmann::json err;
+            err["type"] = "error";
+            err["message"] = e.what();
+            std::string event = "data: " + err.dump() + "\n\n";
+            sink.write(event.data(), event.size());
+          } catch (...) {
+            spdlog::error("[web] chat stream unknown error");
+            std::string event = "data: {\"type\":\"error\",\"message\":\"Unknown error\"}\n\n";
+            sink.write(event.data(), event.size());
+          }
+
+          // 发送结束事件
+          std::string done = "data: {\"type\":\"done\"}\n\n";
+          sink.write(done.data(), done.size());
+          sink.done();
+          return false;
+        });
   });
 
   _running = true;

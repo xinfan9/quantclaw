@@ -1,5 +1,5 @@
 //
-// Created by xinfang on 2026/9/11.
+// 由 xinfang 创建于 2026/9/11.
 //
 
 #include "OpenAIEmbeddingProvider.h"
@@ -72,7 +72,7 @@ int OpenAIEmbeddingProvider::Dimensions() const {
   if (model_.find("text-embedding-3-small") != std::string::npos) return 1536;
   if (model_.find("text-embedding-3-large") != std::string::npos) return 3072;
   if (model_.find("text-embedding-ada-002") != std::string::npos) return 1536;
-  return 1536;  // Safe default for OpenAI embedding models.
+  return 1536;  // OpenAI Embedding 模型的安全默认值。
 }
 
 

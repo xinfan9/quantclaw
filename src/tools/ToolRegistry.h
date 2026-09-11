@@ -10,6 +10,13 @@ public:
   [[nodiscard]] bool Has(const std::string& name) const;
   [[nodiscard]] std::string Execute(const std::string& name, const nlohmann::json& args) const;
 
+  // 返回所有已注册工具名
+  [[nodiscard]] std::vector<std::string> Names() const;
+  // 返回指定工具参数 schema
+  [[nodiscard]] nlohmann::json GetSchema(const std::string& name) const;
+  // 返回指定工具描述
+  [[nodiscard]] std::string GetDescription(const std::string& name) const;
+
   [[nodiscard]] bool Empty() const { return _tools.empty(); }
 
 private:

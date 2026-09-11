@@ -1,5 +1,5 @@
 //
-// Created by xinfang on 2026/9/7.
+// 由 xinfang 创建于 2026/9/7.
 //
 
 // StdioTransport 实现 MCP stdio transport：通过标准输入输出与外部子进程通信。
@@ -28,9 +28,9 @@
 
 #include "StdioTransport.h"
 
-#include <sys/wait.h>   // waitpid
-#include <unistd.h>     // fork, pipe, dup2, close, read, write
-#include <csignal>      // kill, SIGTERM
+#include <sys/wait.h>   // 等待子进程结束
+#include <unistd.h>     // fork、pipe、dup2、close、read、write
+#include <csignal>      // kill、SIGTERM
 
 namespace quantclaw::mcp {
 

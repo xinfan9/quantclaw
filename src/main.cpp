@@ -2,6 +2,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 #include <spdlog/spdlog.h>
@@ -10,10 +11,14 @@
 #include "config.h"
 #include "core/ContextEngine.h"
 #include "core/MemoryEngine.h"
+#include "core/SubagentManager.h"
 #include "gateway/GatewayClient.h"
 #include "gateway/GatewayServer.h"
+#include "platform/service.hpp"
 #include "mcp/MCPClient.h"
+#include "mcp/MCPServer.hpp"
 #include "mcp/MCPTool.h"
+#include "mcp/MCPToolManager.hpp"
 #include "plugins/SidecarManager.h"
 #include "platform.h"
 #include "providers/EmbeddingProvider.h"
@@ -25,6 +30,7 @@
 #include "security/ToolPermissionChecker.h"
 #include "session/ChatHistory.h"
 #include "tools/CalculatorTool.h"
+#include "tools/SubagentTool.h"
 #include "tools/ToolRegistry.h"
 #include "web/WebServer.h"
 
@@ -80,22 +86,60 @@ std::vector<std::string> SplitCommand(const std::string& cmd) {
 }
 
 void RegisterMcpTools(quantclaw::tools::ToolRegistry& tools) {
-  const char* mcp_server = std::getenv("QUANTCLAW_MCP_SERVER");
-  if (!mcp_server) return;
+  // 统一使用 MCPToolManager 管理外部 MCP 服务器，支持单服务器与多服务器配置。
+  quantclaw::mcp::MCPToolManager manager;
 
-  try {
+  // 优先读取多服务器环境变量 QUANTCLAW_MCP_SERVERS（逗号分隔命令行）。
+  const char* mcp_servers_env = std::getenv("QUANTCLAW_MCP_SERVERS");
+  if (mcp_servers_env) {
+    std::string servers_str(mcp_servers_env);
+    std::vector<std::string> server_commands;
+    std::string current;
+    // 简单的逗号分隔解析，暂不支持命令内部含逗号。
+    for (char c : servers_str) {
+      if (c == ',') {
+        if (!current.empty()) {
+          server_commands.push_back(current);
+          current.clear();
+        }
+      } else {
+        current += c;
+      }
+    }
+    if (!current.empty()) server_commands.push_back(current);
+
+    int index = 0;
+    for (const auto& cmd_line : server_commands) {
+      auto parts = SplitCommand(cmd_line);
+      if (parts.empty()) continue;
+      std::string id = "mcp" + std::to_string(index++);
+      manager.AddServer(id, parts[0],
+                        std::vector<std::string>(parts.begin() + 1, parts.end()));
+    }
+  }
+
+  // 兼容旧版单服务器环境变量 QUANTCLAW_MCP_SERVER。
+  const char* mcp_server = std::getenv("QUANTCLAW_MCP_SERVER");
+  if (mcp_server) {
     std::string server_cmd(mcp_server);
     auto parts = SplitCommand(server_cmd);
-    if (parts.empty()) return;
-
-    std::string cmd = parts[0];
-    std::vector<std::string> args(parts.begin() + 1, parts.end());
-
-    auto mcp_client = std::make_shared<quantclaw::mcp::MCPClient>(cmd, args);
-    for (auto& def : mcp_client->ListTools()) {
-      tools.Register(std::make_unique<quantclaw::mcp::MCPTool>(mcp_client, def));
+    if (!parts.empty()) {
+      manager.AddServer("mcp", parts[0],
+                        std::vector<std::string>(parts.begin() + 1, parts.end()));
     }
-    spdlog::info("MCP tools registered from: {}", cmd);
+  }
+
+  try {
+    int registered = 0;
+    // 通过 manager 保持所有 client 存活，并把工具注册到 ToolRegistry。
+    auto manager_ptr = std::make_shared<quantclaw::mcp::MCPToolManager>(std::move(manager));
+    for (const auto& entry : manager_ptr->ListAllToolEntries()) {
+      tools.Register(std::make_unique<quantclaw::mcp::MCPTool>(manager_ptr,
+                                                                entry.server_id,
+                                                                entry.def));
+      ++registered;
+    }
+    spdlog::info("MCP tools registered: {}", registered);
   } catch (const std::exception& e) {
     spdlog::error("Failed to initialize MCP server: {}", e.what());
   }
@@ -103,6 +147,7 @@ void RegisterMcpTools(quantclaw::tools::ToolRegistry& tools) {
 
 void RegisterSidecarTools(quantclaw::tools::ToolRegistry& tools) {
   quantclaw::plugins::SidecarManager sidecar;
+  sidecar.Start();  // 尝试启动本地 TypeScript sidecar
   sidecar.RegisterTools(tools);
 }
 
@@ -110,12 +155,12 @@ quantclaw::providers::ProviderRegistry BuildProviderRegistry(
     const quantclaw::Config& cfg) {
   quantclaw::providers::ProviderRegistry registry;
 
-  // Add per-provider config entries.
+  // 添加每个 Provider 的配置条目。
   for (const auto& [id, pc] : cfg.providers) {
     registry.AddProvider({id, pc.api_key, pc.base_url});
   }
 
-  // Add model aliases.
+  // 添加模型别名映射。
   for (const auto& [alias, target] : cfg.aliases) {
     registry.AddAlias(alias, target);
   }
@@ -155,7 +200,7 @@ std::shared_ptr<quantclaw::providers::EmbeddingProvider> BuildEmbeddingProvider(
       cfg.embedding.base_url);
 }
 
-// ---- default chat command ----
+// ---- 默认对话命令 ----
 int ChatCommand(int argc, char** argv) {
   std::string user_message;
   for (int i = 1; i < argc; ++i) {
@@ -171,6 +216,20 @@ int ChatCommand(int argc, char** argv) {
   try {
     auto cfg = quantclaw::Config::Load();
     spdlog::info("[config] model={} base_url={}", cfg.model, cfg.base_url);
+
+    // 如果环境变量要求走网关，则通过 GatewayClient 发送请求
+    const char* use_gateway = std::getenv("QUANTCLAW_USE_GATEWAY");
+    if (use_gateway && std::string(use_gateway) == "1") {
+      std::string url = "ws://127.0.0.1:" +
+                        std::to_string(cfg.gateway_port > 0
+                                           ? cfg.gateway_port
+                                           : quantclaw::platform::kDefaultGatewayPort);
+      quantclaw::gateway::GatewayClient client(url, cfg.gateway_auth_token);
+      client.Connect(5);
+      std::string reply = client.Chat(user_message, 120);
+      std::cout << reply << "\n";
+      return 0;
+    }
 
     auto registry = BuildProviderRegistry(cfg);
     auto resolver = BuildFailoverResolver(registry, cfg);
@@ -197,6 +256,20 @@ int ChatCommand(int argc, char** argv) {
     quantclaw::tools::ToolRegistry tools;
     tools.Register(std::make_unique<quantclaw::tools::CalculatorTool>());
     spdlog::info("[tools] registered: calculator");
+
+    // 子 agent 工具：让 LLM 可以 spawn 子任务。
+    auto subagent_manager = std::make_shared<quantclaw::core::SubagentManager>();
+    subagent_manager->SetRunner([&provider](const std::string& task) -> std::string {
+      // 子任务使用简洁的系统提示，不包含历史记忆，避免上下文膨胀。
+      std::vector<quantclaw::providers::Message> sub_messages = {
+          {"system",
+           "You are a helpful sub-agent. Solve the given task concisely.", "", {}},
+          {"user", task, "", {}}};
+      auto sub_response = provider->Chat(sub_messages, quantclaw::tools::ToolRegistry());
+      return sub_response.content;
+    });
+    tools.Register(std::make_unique<quantclaw::tools::SubagentTool>(subagent_manager));
+    spdlog::info("[tools] registered: spawn_subagent");
 
     RegisterMcpTools(tools);
     RegisterSidecarTools(tools);
@@ -247,7 +320,7 @@ int ChatCommand(int argc, char** argv) {
     auto context = assembled.messages;
     SummarizeMessages(context, "before llm");
 
-    // Keep the full history (not the pruned context) for persistence.
+    // 保存完整历史（而非压缩后的上下文）到文件。
     quantclaw::providers::Message user_msg{"user", user_message, "", {}};
     messages.push_back(user_msg);
 
@@ -312,11 +385,23 @@ int ChatCommand(int argc, char** argv) {
   }
 }
 
-// ---- gateway server command ----
-int GatewayCommand(int /*argc*/, char** /*argv*/) {
+// ---- 网关服务器命令 ----
+int GatewayCommand(int argc, char** argv) {
   try {
+    bool background = false;
+    for (int i = 1; i < argc; ++i) {
+      if (std::string(argv[i]) == "--background") background = true;
+    }
+
     auto cfg = quantclaw::Config::Load();
     quantclaw::gateway::GatewayServer server(cfg);
+
+    if (background) {
+      quantclaw::platform::ServiceManager daemon;
+      daemon.WritePid(getpid());
+      spdlog::info("Gateway running in background, pid={}", getpid());
+    }
+
     server.Run();
     return 0;
   } catch (const std::exception& e) {
@@ -325,7 +410,29 @@ int GatewayCommand(int /*argc*/, char** /*argv*/) {
   }
 }
 
-// ---- web ui command ----
+// ---- 网关守护进程管理命令 ----
+int GatewayDaemonCommand(int argc, char** argv) {
+  quantclaw::platform::ServiceManager daemon;
+
+  std::string sub = "status";
+  if (argc >= 3) sub = argv[2];
+
+  if (sub == "install") {
+    int port = quantclaw::platform::kDefaultGatewayPort;
+    if (argc >= 4) port = std::stoi(argv[3]);
+    return daemon.Install(port);
+  }
+  if (sub == "uninstall") return daemon.Uninstall();
+  if (sub == "start") return daemon.Start();
+  if (sub == "stop") return daemon.Stop();
+  if (sub == "restart") return daemon.Restart();
+  if (sub == "status") return daemon.Status();
+
+  std::cerr << "Usage: quantclaw gateway {install|uninstall|start|stop|restart|status} [port]\n";
+  return 1;
+}
+
+// ---- Web UI 命令 ----
 int WebCommand(int /*argc*/, char** /*argv*/) {
   try {
     auto cfg = quantclaw::Config::Load();
@@ -338,14 +445,34 @@ int WebCommand(int /*argc*/, char** /*argv*/) {
   }
 }
 
-// ---- clear history command ----
+// ---- MCP Server 命令 ----
+// 以 stdio MCP server 模式运行，把当前 QuantClaw 工具集导出为 MCP tools。
+int MCPServerCommand(int /*argc*/, char** /*argv*/) {
+  try {
+    quantclaw::tools::ToolRegistry tools;
+    tools.Register(std::make_unique<quantclaw::tools::CalculatorTool>());
+    spdlog::info("[mcp-server] registered calculator");
+
+    // 可同时导出通过 MCP 接入的外部工具，实现工具链的二次暴露。
+    RegisterMcpTools(tools);
+
+    quantclaw::mcp::MCPServer server(tools);
+    server.Run();
+    return 0;
+  } catch (const std::exception& e) {
+    spdlog::error("MCP server error: {}", e.what());
+    return 1;
+  }
+}
+
+// ---- 清空历史命令 ----
 int ClearCommand(int /*argc*/, char** /*argv*/) {
   quantclaw::session::ChatHistory().Clear();
   spdlog::info("History cleared.");
   return 0;
 }
 
-// ---- models command ----
+// ---- 模型命令 ----
 int ModelsCommand(int argc, char** argv) {
   auto cfg = quantclaw::Config::Load();
   auto registry = BuildProviderRegistry(cfg);
@@ -380,7 +507,7 @@ int ModelsCommand(int argc, char** argv) {
   return 0;
 }
 
-// ---- config command ----
+// ---- 配置命令 ----
 int ConfigCommand(int /*argc*/, char** /*argv*/) {
   auto cfg = quantclaw::Config::Load();
   std::cout << "Config path: " << quantclaw::Config::DefaultPath() << "\n";
@@ -411,7 +538,7 @@ int main(int argc, char* argv[]) {
 
   quantclaw::cli::CliManager cli;
 
-  // Default behavior: bare message -> chat command.
+  // 默认行为：裸消息映射为 chat 命令。
   cli.AddCommand({"chat",
                   "Send a message to the agent",
                   {},
@@ -422,10 +549,20 @@ int main(int argc, char* argv[]) {
                   {"gateway"},
                   GatewayCommand});
 
+  cli.AddCommand({"gateway",
+                  "Manage gateway daemon (start/stop/restart/status/install/uninstall)",
+                  {},
+                  GatewayDaemonCommand});
+
   cli.AddCommand({"--web",
                   "Run the Web UI server",
                   {"web"},
                   WebCommand});
+
+  cli.AddCommand({"--mcp-server",
+                  "Run the stdio MCP server",
+                  {"mcp-server"},
+                  MCPServerCommand});
 
   cli.AddCommand({"--clear",
                   "Clear chat history",

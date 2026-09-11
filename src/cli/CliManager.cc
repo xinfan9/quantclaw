@@ -1,5 +1,5 @@
 //
-// Created by xinfang on 2026/9/9.
+// 由 xinfang 创建于 2026/9/9.
 //
 
 #include "CliManager.h"
@@ -34,7 +34,8 @@ int CliManager::Run(int argc, char** argv) {
 
   std::string cmd_name(argv[1]);
 
-  if (cmd_name == "--gateway" || cmd_name == "--web" || cmd_name == "--clear" || cmd_name == "clear") {
+  if (cmd_name == "--gateway" || cmd_name == "--web" || cmd_name == "--mcp-server" ||
+      cmd_name == "mcp-server" || cmd_name == "--clear" || cmd_name == "clear") {
     if (const auto* cmd = FindCommand(cmd_name)) return cmd->handler(argc, argv);
   }
 

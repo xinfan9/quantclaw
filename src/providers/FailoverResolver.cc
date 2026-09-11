@@ -1,5 +1,5 @@
 //
-// Created by xinfang on 2026/9/10.
+// 由 xinfang 创建于 2026/9/10.
 //
 
 #include "FailoverResolver.h"

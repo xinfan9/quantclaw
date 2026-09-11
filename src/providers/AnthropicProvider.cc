@@ -1,5 +1,5 @@
 //
-// Created by xinfang on 2026/9/4.
+// 由 xinfang 创建于 2026/9/4.
 //
 
 #include "AnthropicProvider.h"

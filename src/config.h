@@ -1,5 +1,5 @@
 #pragma once
-#include <cstdlib>   // std::getenv, std::atoi
+#include <cstdlib>   // std::getenv、std::atoi
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -40,7 +40,7 @@ struct ToolPermissionConfig {
 // 外部命令执行审批配置
 // mode: off（不审批）| on_miss（不在 allowlist 中时审批）| always（总是审批）
 struct ExecApprovalConfig {
-  std::string mode = "on_miss"; // off | on_miss | always
+  std::string mode = "on_miss"; // 审批模式：off | on_miss | always
   std::vector<std::string> allowlist;
   int timeout_seconds = 120;
   
@@ -62,6 +62,10 @@ struct Config {
   ToolPermissionConfig tool_permissions; // 工具权限配置
 
   ExecApprovalConfig exec_approval; // 外部命令执行审批配置
+
+  // Gateway 配置
+  std::string gateway_auth_token; // WebSocket 网关认证 token（空表示不校验）
+  int gateway_port = 0;           // 网关端口，0 表示使用默认值
 
   int context_window = 0; // 上下文窗口大小
   int max_tokens = 0;     // 单次请求最大生成 token 数
@@ -260,6 +264,17 @@ inline Config Config::LoadFromFile(const std::string& path) {
       }
     }
 
+    // 解析 gateway 节点
+    if (json.contains("gateway") && json["gateway"].is_object()) {
+      const auto& gw = json["gateway"];
+      if (gw.contains("authToken") && gw["authToken"].is_string()) {
+        cfg.gateway_auth_token = gw["authToken"].get<std::string>();
+      }
+      if (gw.contains("port") && gw["port"].is_number_integer()) {
+        cfg.gateway_port = gw["port"].get<int>();
+      }
+    }
+
 
   } catch (const std::exception& e) {}
 
@@ -267,6 +282,7 @@ inline Config Config::LoadFromFile(const std::string& path) {
   return cfg;
 }
 
+// 常用环境变量设置示例：
 // export CLAW_API_KEY="sk-..."
 // export CLAW_MODEL="claude-3-5-sonnet-20240620"
 // export CLAW_BASE_URL="https://api.anthropic.com/v1"
@@ -332,6 +348,16 @@ inline void Config::ApplyEnvOverrides(Config& cfg) {
   const char* exec_mode = std::getenv("CLAW_EXEC_APPROVAL_MODE");
   if (exec_mode && !std::string(exec_mode).empty()) {
     cfg.exec_approval.mode = exec_mode;
+  }
+
+  const char* gateway_token = std::getenv("CLAW_GATEWAY_AUTH_TOKEN");
+  if (gateway_token && !std::string(gateway_token).empty()) {
+    cfg.gateway_auth_token = gateway_token;
+  }
+
+  const char* gateway_port = std::getenv("CLAW_GATEWAY_PORT");
+  if (gateway_port && !std::string(gateway_port).empty()) {
+    cfg.gateway_port = std::stoi(gateway_port);
   }
 }
 

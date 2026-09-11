@@ -41,6 +41,24 @@ std::string ToolRegistry::Execute(const std::string& name, const nlohmann::json&
   return result;
 }
 
+std::vector<std::string> ToolRegistry::Names() const {
+  std::vector<std::string> names;
+  for (const auto& [name, _] : _tools) names.push_back(name);
+  return names;
+}
+
+nlohmann::json ToolRegistry::GetSchema(const std::string& name) const {
+  auto it = _tools.find(name);
+  if (it == _tools.end()) return nlohmann::json::object();
+  return it->second->parameters;
+}
+
+std::string ToolRegistry::GetDescription(const std::string& name) const {
+  auto it = _tools.find(name);
+  if (it == _tools.end()) return "";
+  return it->second->description;
+}
+
 
 
 

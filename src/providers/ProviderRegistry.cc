@@ -3,6 +3,8 @@
 #include <spdlog/spdlog.h>
 
 #include "AnthropicProvider.h"
+#include "GitHubCopilotProvider.h"
+#include "OpenAICodexProvider.h"
 #include "OpenAIProvider.h"
 
 namespace quantclaw::providers {
@@ -26,17 +28,17 @@ void ProviderRegistry::AddAlias(const std::string& alias,
 ModelRef ProviderRegistry::ResolveModel(const std::string& raw) const {
   std::string resolved = raw;
 
-  // Expand alias if present.
+  // 如果存在别名，则先展开。
   auto alias_it = aliases_.find(raw);
   if (alias_it != aliases_.end()) {
     resolved = alias_it->second;
     spdlog::debug("[provider] alias expanded: {} -> {}", raw, resolved);
   }
 
-  // Parse "provider/model" or bare model name.
+  // 解析 "provider/model" 或裸模型名。
   auto slash = resolved.find('/');
   if (slash == std::string::npos) {
-    // Bare model name: infer provider from prefix.
+    // 裸模型名：根据前缀推断 provider。
     if (resolved.rfind("anthropic/", 0) == 0 ||
         resolved.rfind("claude", 0) == 0) {
       return {"anthropic", resolved};
@@ -124,6 +126,16 @@ void ProviderRegistry::RegisterBuiltinFactories() {
   RegisterFactory("anthropic",
                   [](const ProviderEntry& entry, const std::string& model) {
                     return std::make_unique<AnthropicProvider>(
+                        entry.api_key, model, entry.base_url);
+                  });
+  RegisterFactory("github_copilot",
+                  [](const ProviderEntry& entry, const std::string& model) {
+                    return std::make_unique<GitHubCopilotProvider>(
+                        entry.api_key, model, entry.base_url);
+                  });
+  RegisterFactory("openai_codex",
+                  [](const ProviderEntry& entry, const std::string& model) {
+                    return std::make_unique<OpenAICodexProvider>(
                         entry.api_key, model, entry.base_url);
                   });
 }

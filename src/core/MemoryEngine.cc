@@ -96,7 +96,7 @@ std::vector<std::string> MemoryEngine::Search(const std::string& query,
 
   const double avg_doc_len = static_cast<double>(total_doc_len) / docs.size();
 
-  // Document frequency for IDF.
+  // 计算每个词项的文档频率，用于 IDF。
   std::unordered_map<std::string, std::size_t> doc_freq;
   for (const auto& doc : docs) {
     std::unordered_map<std::string, bool> seen;
@@ -113,7 +113,7 @@ std::vector<std::string> MemoryEngine::Search(const std::string& query,
     std::string text;
   };
 
-  // BM25 candidates.
+  // BM25 候选结果。
   std::vector<ScoredMessage> bm25_scored;
   bm25_scored.reserve(docs.size());
   for (const auto& doc : docs) {
@@ -132,7 +132,7 @@ std::vector<std::string> MemoryEngine::Search(const std::string& query,
     return {};
   }
 
-  // Vector candidates.
+  // 向量相似度候选结果。
   std::vector<ScoredMessage> vector_scored;
   if (_has_vector) {
     try {
@@ -151,7 +151,7 @@ std::vector<std::string> MemoryEngine::Search(const std::string& query,
     }
   }
 
-  // Normalize and merge scores.
+  // 归一化并合并 BM25 与向量分数。
   std::unordered_map<std::string, std::pair<double, bool>> bm25_map;
   double max_bm25 = 0.0;
   for (std::size_t i = 0; i < candidate_count; ++i) {
@@ -184,7 +184,7 @@ std::vector<std::string> MemoryEngine::Search(const std::string& query,
     }
   }
 
-  // Include vector-only candidates.
+  // 将仅出现在向量结果中的候选也纳入最终排序。
   if (_has_vector && !vector_scored.empty()) {
     for (const auto& [text, pair] : vector_map) {
       if (combined.find(text) != combined.end()) continue;

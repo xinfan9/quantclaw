@@ -1,18 +1,21 @@
 # QuantClaw
 
-QuantClaw 是一个模块化的 C++ AI 助手程序，支持命令行对话、Web UI、WebSocket 网关、多 LLM 提供商、本地工具、MCP 外部工具和 Node.js Sidecar 扩展。
+QuantClaw 是一个模块化的 C++ AI 助手程序，支持命令行对话、Web UI、WebSocket 网关、多 LLM 提供商、本地工具、MCP 外部工具、子 agent 和 Node.js Sidecar 扩展。
 
 ## 功能特性
 
 - **多 LLM 提供商**：支持 OpenAI、Anthropic，通过 `ProviderRegistry` 按模型前缀自动分发。
 - **CLI 对话**：命令行输入，自动保存多轮对话历史。
-- **工具系统**：内置 `calculator` 工具；支持 MCP 工具和 Node.js Sidecar 工具动态注册。
-- **MCP 支持**：通过 stdio transport 启动外部 MCP 服务器，将其工具接入对话。
+- **工具系统**：内置 `calculator` 工具；支持 MCP 工具、Node.js Sidecar 工具、子 agent 工具动态注册。
+- **MCP 支持**：
+    - 作为 **MCP Client**：通过 stdio transport 启动外部 MCP 服务器，将其工具接入对话。
+    - 作为 **MCP Server**：`--mcp-server` 将当前 QuantClaw 工具集以 stdio MCP server 形式暴露给外部客户端。
+- **子 agent**：`spawn_subagent` 工具允许 LLM 将复杂任务拆分为子任务执行，支持递归深度与并发限制。
 - **网关模式**：`--gateway` 启动 WebSocket JSON-RPC 网关；客户端可通过 `QUANTCLAW_USE_GATEWAY=1` 走网关访问 LLM。
-- **Web UI**：`--web` 启动内置 HTTP 服务，浏览器访问即可聊天。
+- **Web UI**：`--web` 启动内置 HTTP 服务，支持 SSE 流式输出，浏览器访问即可聊天。
 - **对话管理**：基于文件的 `ChatHistory`，支持 `--clear` / `clear` 清空历史。
 - **记忆检索**：`MemoryEngine` 根据用户问题搜索历史中的相关上下文。
-- **权限控制**：`PermissionManager` 在调用工具前进行审批（CLI 默认询问，Web UI 自动允许）。
+- **权限控制**：`ToolPermissionChecker` + `ExecApprovalManager` 在调用工具前进行审批（CLI 默认询问，Web UI 自动允许）。
 
 ## 依赖
 
@@ -20,16 +23,17 @@ QuantClaw 是一个模块化的 C++ AI 助手程序，支持命令行对话、We
 - CMake 4.0+
 - libcurl
 - 其他依赖通过 CMake `FetchContent` 自动下载：
-  - nlohmann/json
-  - spdlog
-  - IXWebSocket
-  - cpp-httplib
+    - nlohmann/json
+    - spdlog
+    - IXWebSocket
+    - cpp-httplib
+    - googletest（仅测试）
 
 ## 快速开始
 
 ```bash
-cmake -B build
-cmake --build build
+cd my_claw
+./build.sh
 
 export CLAW_API_KEY=sk-...
 export CLAW_MODEL=gpt-4o
@@ -55,7 +59,8 @@ export CLAW_BASE_URL=https://api.openai.com/v1
 | `CLAW_MODEL` | 模型名称 | `gpt-4o`、`claude-3-5-sonnet-20240620` |
 | `CLAW_BASE_URL` | LLM API 基础地址 | `https://api.openai.com/v1` |
 | `QUANTCLAW_USE_GATEWAY` | 设为 `1` 时通过网关客户端发送请求 | `1` |
-| `QUANTCLAW_MCP_SERVER` | MCP 服务器启动命令 | `npx -y @modelcontextprotocol/server-filesystem /tmp` |
+| `QUANTCLAW_MCP_SERVER` | MCP 服务器启动命令（兼容单服务器） | `npx -y @modelcontextprotocol/server-filesystem /tmp` |
+| `QUANTCLAW_MCP_SERVERS` | 多个 MCP 服务器启动命令，逗号分隔 | `npx -y @modelcontextprotocol/server-filesystem /tmp,npx -y @modelcontextprotocol/server-fetch` |
 | `QUANTCLAW_SIDECAR_URL` | Node.js Sidecar 地址 | `http://127.0.0.1:18802` |
 | `QUANTCLAW_SIDECAR_DISABLED` | 设为 `1` 时禁用 Sidecar 工具注册 | `1` |
 
@@ -99,7 +104,7 @@ QUANTCLAW_USE_GATEWAY=1 ./build/quantclaw "你好"
 ./build/quantclaw --web
 ```
 
-默认监听 `http://127.0.0.1:8080`，浏览器打开即可使用。
+默认监听 `http://127.0.0.1:8080`，浏览器打开即可使用。前端通过 SSE 实时显示生成内容。
 
 ### 接入 MCP 工具
 
@@ -108,22 +113,54 @@ export QUANTCLAW_MCP_SERVER="npx -y @modelcontextprotocol/server-filesystem /tmp
 ./build/quantclaw "帮我列出 /tmp 下的文件"
 ```
 
+### 以 MCP Server 模式运行
+
+```bash
+./build/quantclaw --mcp-server
+```
+
+外部 MCP client 可通过 stdio 连接，调用 `calculator` 与 `quantclaw_chat` 等工具。
+
+### 子 agent 工具
+
+LLM 可调用 `spawn_subagent` 工具拆分复杂任务，例如：
+
+> "请使用子 agent 分别总结前三段对话的核心观点。"
+
+子 agent 使用当前模型独立执行，受递归深度与并发数限制。
+
+## 构建与测试
+
+```bash
+cd my_claw
+./build.sh       # 编译 + 运行单元测试
+./smoke-test.sh  # 冒烟测试
+```
+
+运行指定测试：
+
+```bash
+./build/quantclaw_tests --gtest_filter="ToolRegistryTest.*"
+```
+
 ## 项目结构
 
 ```text
 src/
-  main.cpp              # 入口：CLI、网关、Web UI 路由
-  config.h              # 配置加载（环境变量）
+  main.cpp              # 入口：CLI、网关、Web UI、MCP server
+  config.h              # 配置加载（文件 + 环境变量）
   cli/                  # CliManager 命令管理
-  core/                 # MemoryEngine 记忆检索
-  providers/            # LLMProvider 抽象、OpenAI/Anthropic 实现、HttpClient、ProviderFactory、ProviderRegistry
+  core/                 # MemoryEngine、ContextEngine、SubagentManager、cron_scheduler
+  providers/            # LLMProvider 抽象、OpenAI/Anthropic 实现、HttpClient、ProviderRegistry、Failover
   session/              # ChatHistory 对话历史
-  tools/                # Tool 抽象、ToolRegistry、CalculatorTool
-  mcp/                  # MCPClient、MCPTool、StdioTransport
-  gateway/              # GatewayServer（WebSocket）、GatewayClient、JsonRpcMessage
-  plugins/              # SidecarManager、SidecarTool（Node.js 扩展）
-  security/             # PermissionManager 权限审批
-  web/                  # WebServer（HTTP + 内置前端页面）
+  tools/                # Tool 抽象、ToolRegistry、CalculatorTool、SubagentTool
+  mcp/                  # MCPClient、MCPServer、MCPToolManager、StdioTransport
+  gateway/              # GatewayServer（WebSocket）、GatewayClient、JsonRpcMessage、command_queue
+  plugins/              # SidecarManager、SidecarTool、plugin_system
+  security/             # ToolPermissionChecker、ExecApprovalManager 权限审批
+  web/                  # WebServer（HTTP + 内置前端页面，支持 SSE）
+  platform/             # process、service
+tests/                  # gtest 单元测试
 ```
 
 ## 常见问题
@@ -147,3 +184,4 @@ QUANTCLAW_SIDECAR_DISABLED=1 ./build/quantclaw "你好"
 - 使用 C++17。
 - 编译选项开启 `-Wall -Wextra -O2`。
 - 优先使用 RAII 管理资源。
+- 源码注释以中文为主，便于团队维护。
