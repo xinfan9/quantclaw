@@ -84,6 +84,24 @@ add_executable(quantclaw src/main.cpp
         src/cli/CliManager.h
         src/providers/ProviderRegistry.cc
         src/providers/ProviderRegistry.h
+        src/providers/ProviderError.h
+        src/providers/CooldownTracker.cc
+        src/providers/CooldownTracker.h
+        src/providers/FailoverResolver.cc
+        src/providers/FailoverResolver.h
+        src/providers/EmbeddingProvider.h
+        src/providers/OpenAIEmbeddingProvider.cc
+        src/providers/OpenAIEmbeddingProvider.h
+        src/core/VectorIndex.cc
+        src/core/VectorIndex.h
+        src/core/ContextPruner.cc
+        src/core/ContextPruner.h
+        src/core/ContextEngine.cc
+        src/core/ContextEngine.h
+        src/security/ToolPermissionChecker.cc
+        src/security/ToolPermissionChecker.h
+        src/security/ExecApprovalManager.cc
+        src/security/ExecApprovalManager.h
 )
 
 

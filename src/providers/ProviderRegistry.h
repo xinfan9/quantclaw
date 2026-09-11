@@ -35,9 +35,17 @@ public:
 
   ModelRef ResolveModel(const std::string& raw) const;
 
+  ProviderEntry ResolveEntry(const ModelRef& ref, const Config& cfg) const;
+
+  std::unique_ptr<LLMProvider> CreateProvider(const ModelRef& ref, const ProviderEntry& entry) const;
+
   std::unique_ptr<LLMProvider> CreateProvider(const ModelRef& ref, const Config& cfg) const;
 
   std::unique_ptr<LLMProvider> CreateProvider(const Config& cfg) const;
+
+  std::shared_ptr<LLMProvider> CreateProviderShared(const ModelRef& ref, const Config& cfg) const;
+
+  const ProviderEntry* GetEntry(const std::string& provider_id) const;
 
   std::vector<std::string> ProviderIds() const;
   std::vector<std::pair<std::string, std::string>> Aliases() const;

@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -7,15 +8,21 @@
 
 #include "cli/CliManager.h"
 #include "config.h"
+#include "core/ContextEngine.h"
 #include "core/MemoryEngine.h"
+#include "gateway/GatewayClient.h"
 #include "gateway/GatewayServer.h"
 #include "mcp/MCPClient.h"
 #include "mcp/MCPTool.h"
 #include "plugins/SidecarManager.h"
 #include "platform.h"
+#include "providers/EmbeddingProvider.h"
+#include "providers/FailoverResolver.h"
 #include "providers/LLMProvider.h"
+#include "providers/OpenAIEmbeddingProvider.h"
 #include "providers/ProviderRegistry.h"
-#include "security/PermissionManager.h"
+#include "security/ExecApprovalManager.h"
+#include "security/ToolPermissionChecker.h"
 #include "session/ChatHistory.h"
 #include "tools/CalculatorTool.h"
 #include "tools/ToolRegistry.h"
@@ -116,6 +123,38 @@ quantclaw::providers::ProviderRegistry BuildProviderRegistry(
   return registry;
 }
 
+std::unique_ptr<quantclaw::providers::FailoverResolver> BuildFailoverResolver(
+    quantclaw::providers::ProviderRegistry& registry,
+    const quantclaw::Config& cfg) {
+  auto resolver = std::make_unique<quantclaw::providers::FailoverResolver>(
+      &registry, cfg);
+
+  resolver->SetFallbackChain(cfg.fallback_chain);
+
+  for (const auto& [id, pc] : cfg.providers) {
+    if (pc.profiles.empty()) continue;
+    std::vector<quantclaw::providers::AuthProfile> profiles;
+    for (const auto& p : pc.profiles) {
+      profiles.push_back({p.id, p.api_key, 0});
+    }
+    resolver->SetProfiles(id, profiles);
+  }
+
+  return resolver;
+}
+
+std::shared_ptr<quantclaw::providers::EmbeddingProvider> BuildEmbeddingProvider(
+    const quantclaw::Config& cfg) {
+  if (cfg.embedding.api_key.empty() || cfg.embedding.base_url.empty()) {
+    return nullptr;
+  }
+  return std::make_shared<quantclaw::providers::OpenAIEmbeddingProvider>(
+      cfg.embedding.api_key,
+      cfg.embedding.model.empty() ? "text-embedding-3-small"
+                                  : cfg.embedding.model,
+      cfg.embedding.base_url);
+}
+
 // ---- default chat command ----
 int ChatCommand(int argc, char** argv) {
   std::string user_message;
@@ -134,12 +173,26 @@ int ChatCommand(int argc, char** argv) {
     spdlog::info("[config] model={} base_url={}", cfg.model, cfg.base_url);
 
     auto registry = BuildProviderRegistry(cfg);
-    auto provider = registry.CreateProvider(cfg);
-    if (!provider) {
-      spdlog::error("Failed to create provider for model: {}", cfg.model);
+    auto resolver = BuildFailoverResolver(registry, cfg);
+    auto resolved = resolver->Resolve(cfg.model);
+    if (!resolved || !resolved->provider) {
+      spdlog::error("Failed to resolve provider for model: {}", cfg.model);
       return 1;
     }
-    spdlog::info("[provider] created {}", cfg.model);
+    spdlog::info("[provider] resolved {} profile={} fallback={}", cfg.model,
+                 resolved->profile_id.empty() ? "<default>"
+                                              : resolved->profile_id,
+                 resolved->is_fallback);
+
+    auto provider = resolved->provider;
+
+    auto embedder = BuildEmbeddingProvider(cfg);
+    if (embedder) {
+      spdlog::info("[embedding] enabled provider={} model={}",
+                   embedder->Name(), cfg.embedding.model);
+    } else {
+      spdlog::info("[embedding] disabled");
+    }
 
     quantclaw::tools::ToolRegistry tools;
     tools.Register(std::make_unique<quantclaw::tools::CalculatorTool>());
@@ -148,48 +201,67 @@ int ChatCommand(int argc, char** argv) {
     RegisterMcpTools(tools);
     RegisterSidecarTools(tools);
 
-    quantclaw::security::PermissionManager permission(
-        quantclaw::security::PermissionManager::Mode::kAlwaysAsk);
+    quantclaw::security::ToolPermissionChecker permission_checker(
+        cfg.tool_permissions.allow, cfg.tool_permissions.deny);
+
+    quantclaw::security::ExecApprovalConfig exec_cfg;
+    exec_cfg.mode =
+        quantclaw::security::ParseAskMode(cfg.exec_approval.mode);
+    exec_cfg.allowlist = cfg.exec_approval.allowlist;
+    exec_cfg.timeout_seconds = cfg.exec_approval.timeout_seconds;
+    quantclaw::security::ExecApprovalManager approval_manager(exec_cfg);
 
     quantclaw::session::ChatHistory history;
     auto messages = history.Load();
     spdlog::info("[history] loaded {} messages", messages.size());
     SummarizeMessages(messages, "after load");
 
-    constexpr size_t kMaxHistory = 20;
-    if (messages.size() > kMaxHistory) {
-      messages = std::vector(messages.end() - kMaxHistory, messages.end());
-      spdlog::info("[history] truncated to last {} messages", kMaxHistory);
-    }
-
-    quantclaw::core::MemoryEngine memory(messages);
+    quantclaw::core::MemoryEngine memory(messages, embedder);
     auto relevant = memory.Search(user_message, 3);
     std::string memory_context =
         quantclaw::core::MemoryEngine::FormatContext(relevant);
     spdlog::debug("[memory] formatted context:\n{}", memory_context);
-    if (messages.empty()) {
-      std::string sys_prompt =
-          "You are a helpful assistant. Use tools when they can help answer "
-          "the user's question.";
-      if (!memory_context.empty()) {
-        sys_prompt += "\n\n" + memory_context;
-      }
-      messages.push_back({"system", sys_prompt, "", {}});
-      spdlog::info("[history] added default system message");
+
+    std::string system_prompt =
+        "You are a helpful assistant. Use tools when they can help answer "
+        "the user's question.";
+    if (!memory_context.empty()) {
+      system_prompt += "\n\n" + memory_context;
     }
 
-    messages.push_back({"user", user_message, "", {}});
-    SummarizeMessages(messages, "before llm");
+    if (messages.empty() || messages[0].role != "system") {
+      messages.insert(messages.begin(),
+                      {"system", system_prompt, "", {}});
+      spdlog::info("[history] added system message");
+    } else {
+      messages[0].content = system_prompt;
+      spdlog::info("[history] updated system message");
+    }
+
+    int context_window = cfg.context_window > 0 ? cfg.context_window : 8192;
+    int max_tokens = cfg.max_tokens > 0 ? cfg.max_tokens : 4096;
+
+    quantclaw::core::DefaultContextEngine context_engine;
+    auto assembled = context_engine.Assemble(messages, user_message,
+                                             context_window, max_tokens);
+    auto context = assembled.messages;
+    SummarizeMessages(context, "before llm");
+
+    // Keep the full history (not the pruned context) for persistence.
+    quantclaw::providers::Message user_msg{"user", user_message, "", {}};
+    messages.push_back(user_msg);
 
     std::string final_reply;
     for (int iteration = 0; iteration < 5; ++iteration) {
       spdlog::info("[llm call] iteration={}", iteration + 1);
-      auto response = provider->Chat(messages, tools);
+      auto response = provider->Chat(context, tools);
+      resolver->RecordSuccess(resolved->provider_id, resolved->profile_id);
       SummarizeResponse(response);
 
       if (!response.isToolCall()) {
         final_reply = response.content;
         messages.push_back({"assistant", final_reply, "", {}});
+        context.push_back({"assistant", final_reply, "", {}});
         spdlog::info("[llm] final reply received");
         break;
       }
@@ -199,19 +271,30 @@ int ChatCommand(int argc, char** argv) {
       assistant_msg.content = response.content;
       assistant_msg.tool_calls = response.tool_calls;
       messages.push_back(assistant_msg);
+      context.push_back(assistant_msg);
 
       for (const auto& tool_call : response.tool_calls) {
-        if (!permission.RequestPermission(tool_call.name,
-                                          tool_call.arguments.dump())) {
+        if (!permission_checker.IsAllowed(tool_call.name)) {
           spdlog::info("[tool permission] denied {}", tool_call.name);
           messages.push_back({"tool", "Permission denied", tool_call.id, {}});
+          context.push_back({"tool", "Permission denied", tool_call.id, {}});
           continue;
         }
+
+        std::string command_summary = tool_call.name + " " + tool_call.arguments.dump();
+        if (!approval_manager.RequestApproval(command_summary)) {
+          spdlog::info("[tool approval] denied {}", tool_call.name);
+          messages.push_back({"tool", "Execution approval denied", tool_call.id, {}});
+          context.push_back({"tool", "Execution approval denied", tool_call.id, {}});
+          continue;
+        }
+
         spdlog::info("[tool execute] name={} args={}",
                      tool_call.name, tool_call.arguments.dump());
         std::string result = tools.Execute(tool_call.name, tool_call.arguments);
         spdlog::info("[tool result] name={} result={}", tool_call.name, result);
         messages.push_back({"tool", result, tool_call.id, {}});
+        context.push_back({"tool", result, tool_call.id, {}});
       }
 
       SummarizeMessages(messages, "after tool results");
@@ -288,6 +371,12 @@ int ModelsCommand(int argc, char** argv) {
       std::cout << "  " << alias << " -> " << target << "\n";
     }
   }
+  if (!cfg.fallback_chain.empty()) {
+    std::cout << "Fallback chain:\n";
+    for (const auto& m : cfg.fallback_chain) {
+      std::cout << "  " << m << "\n";
+    }
+  }
   return 0;
 }
 
@@ -297,8 +386,19 @@ int ConfigCommand(int /*argc*/, char** /*argv*/) {
   std::cout << "Config path: " << quantclaw::Config::DefaultPath() << "\n";
   std::cout << "model: " << cfg.model << "\n";
   std::cout << "base_url: " << cfg.base_url << "\n";
+  std::cout << "context_window: " << cfg.context_window << "\n";
+  std::cout << "max_tokens: " << cfg.max_tokens << "\n";
   std::cout << "providers: " << cfg.providers.size() << "\n";
   std::cout << "aliases: " << cfg.aliases.size() << "\n";
+  std::cout << "fallback_chain: " << cfg.fallback_chain.size() << "\n";
+  std::cout << "embedding enabled: "
+            << (cfg.embedding.api_key.empty() ? "no" : "yes") << "\n";
+  if (!cfg.embedding.model.empty()) {
+    std::cout << "embedding model: " << cfg.embedding.model << "\n";
+  }
+  std::cout << "tool_permissions allow: " << cfg.tool_permissions.allow.size()
+            << " deny: " << cfg.tool_permissions.deny.size() << "\n";
+  std::cout << "exec_approval mode: " << cfg.exec_approval.mode << "\n";
   return 0;
 }
 
